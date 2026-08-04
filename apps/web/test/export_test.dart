@@ -33,4 +33,34 @@ void main() {
     expect(gdtfDefinitionFor('Gobo1')?.name, 'Gobo(n)');
     expect(gdtfDefinitionFor('ColorAdd_R')?.beginnerLabel, 'Red intensity');
   });
+
+  test('exports distinct same-size personalities to OFL and GDTF', () {
+    final multiMode = fixtureFromManualText('''BETOPPER Model: COMPLEX
+49AC Channel Table
+1 000-255 Pan
+49BC Channel Table
+1 000-255 Tilt
+''', 'complex.pdf').fixture;
+
+    final ofl = jsonDecode(utf8.decode(exportOfl(multiMode))) as Map;
+    final oflModes = (ofl['modes'] as List).cast<Map>();
+    expect(oflModes.map((mode) => mode['name']), ['49AC', '49BC']);
+    expect(
+      oflModes.every((mode) => (mode['channels'] as List).length == 49),
+      isTrue,
+    );
+    expect(
+      (oflModes.first['channels'] as List).toSet().intersection(
+        (oflModes.last['channels'] as List).toSet(),
+      ),
+      isEmpty,
+    );
+
+    final archive = ZipDecoder().decodeBytes(exportGdtf(multiMode));
+    final xml = utf8.decode(
+      archive.findFile('description.xml')!.content as List<int>,
+    );
+    expect(xml, contains('DMXMode Name="49AC"'));
+    expect(xml, contains('DMXMode Name="49BC"'));
+  });
 }

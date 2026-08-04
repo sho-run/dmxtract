@@ -452,7 +452,13 @@ class TestLightScreen extends StatelessWidget {
       return;
     }
     final index = state.fixture!.channels.indexOf(channel);
-    await showChannelEditor(context, state, index, retest: true);
+    await showChannelEditor(
+      context,
+      state,
+      index,
+      retest: true,
+      displayNumber: state.testChannel + 1,
+    );
   }
 
   static Future<void> _changeValue(

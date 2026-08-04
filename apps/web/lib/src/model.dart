@@ -164,6 +164,11 @@ class FixtureProject {
   List<FixtureMode> modes;
   List<Map<String, Object?>> wheels;
   Map<String, Object?> physical;
+  int get maxModeChannelCount => modes.isEmpty
+      ? 0
+      : modes
+            .map((mode) => mode.channelIds.length)
+            .reduce((a, b) => a > b ? a : b);
   Map<String, Object?> toJson() => {
     'schema': 'https://dmxtract.sho.run/schemas/fixture-v1.json',
     'schemaVersion': 1,

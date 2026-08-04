@@ -163,6 +163,244 @@ DMX Channel Assignments and Values
     expect(result.questions.where((item) => item.contains('channel')), isEmpty);
   });
 
+  test('preserves coded personalities with repeated channel counts', () {
+    final manual = StringBuffer('''BETOPPER Model: LM3715R
+37x15W RGBW 4-in-1 LEDs
+''');
+    const personalities = <(String, int)>[
+      ('49AC', 49),
+      ('CH33', 33),
+      ('CH27', 27),
+      ('CH22', 22),
+      ('49BC', 49),
+      ('AC37', 37),
+      ('CH30', 30),
+      ('BC37', 37),
+      ('CH58', 58),
+      ('C162', 162),
+    ];
+    for (final personality in personalities) {
+      manual.writeln(
+        '=== DMXTRACT PAGE ${personalities.indexOf(personality) + 8} ===',
+      );
+      manual.writeln('${personality.$1} Channel Table');
+      for (var channel = 1; channel <= personality.$2; channel++) {
+        final function = personality.$1 == 'CH33'
+            ? switch (channel) {
+                1 => 'X-axis',
+                2 => 'X-axis fine-tuning',
+                3 => 'Y-axis',
+                4 => 'Y-axis fine-tuning',
+                5 => 'XY speed',
+                6 => 'Reset (200-209 is the reset value)',
+                7 => 'R1',
+                8 => 'R1 fine-tuning',
+                19 => 'Shutter',
+                20 => 'Dimming',
+                21 => 'Dimming fine-tuning',
+                22 => 'Void',
+                _ => 'Control $channel',
+              }
+            : 'Control $channel';
+        if (personality.$1 == 'CH33' && channel == 22) {
+          manual.writeln('22 0-9 $function');
+          manual.writeln('10-255 Auxiliary light strobe (slow to fast)');
+        } else {
+          manual.writeln('$channel 000-255 $function');
+        }
+      }
+    }
+
+    final result = fixtureFromManualText(
+      manual.toString(),
+      'Betopper_LM3715R_User_Manual.pdf',
+    );
+    final fixture = result.fixture;
+    expect(fixture.model, 'LM3715R');
+    expect(fixture.modes.map((mode) => mode.name), [
+      '49AC',
+      'CH33',
+      'CH27',
+      'CH22',
+      '49BC',
+      'AC37',
+      'CH30',
+      'BC37',
+      'CH58',
+      'C162',
+    ]);
+    expect(fixture.modes.map((mode) => mode.channelIds.length), [
+      49,
+      33,
+      27,
+      22,
+      49,
+      37,
+      30,
+      37,
+      58,
+      162,
+    ]);
+    expect(fixture.channels, hasLength(504));
+    expect(fixture.maxModeChannelCount, 162);
+    expect(
+      fixture.modes[0].channelIds.toSet().intersection(
+        fixture.modes[4].channelIds.toSet(),
+      ),
+      isEmpty,
+    );
+
+    final ch33 = fixture.modes[1];
+    final ch33Channels = ch33.channelIds
+        .map((id) => fixture.channels.firstWhere((item) => item.id == id))
+        .toList();
+    expect(ch33Channels.take(8).map((channel) => channel.name), [
+      'Pan',
+      'Pan fine',
+      'Tilt',
+      'Tilt fine',
+      'Pan / tilt speed',
+      'Reset / function',
+      'Red 1',
+      'Red 1 fine',
+    ]);
+    expect(ch33Channels[1].fineOf, ch33Channels[0].id);
+    expect(ch33Channels[7].fineOf, ch33Channels[6].id);
+    expect(ch33Channels[21].name, 'Light switch / strobe');
+    expect(ch33Channels[21].ranges, hasLength(2));
+    expect(ch33Channels[21].ranges.last.safety, 'strobe');
+    expect(result.questions, isNot(contains(contains('channel rows'))));
+  });
+
+  test('reports incomplete coded tables by personality', () {
+    final result = fixtureFromManualText('''BETOPPER Model: TEST100
+CH12 Channel Table
+1 000-255 Pan
+2 000-255 Tilt
+3 000-255 Dimmer
+''', 'test100.pdf');
+    expect(result.fixture.modes.single.name, 'CH12');
+    expect(result.fixture.modes.single.channelIds, hasLength(12));
+    expect(
+      result.questions,
+      contains(
+        'CH12: we read 3 of 12 channel rows. Check the highlighted controls.',
+      ),
+    );
+  });
+
+  test('normalizes common OCR mistakes in personality codes', () {
+    final result = fixtureFromManualText('''BETOPPER Model: TEST200
+A9AC Channel Table
+1 000-255 Pan
+I49BC Channel Table
+1 000-255 Tilt
+C162 Channel Table
+1 000-255 Dimmer
+162 Channel Table
+CHH27 Chine! lable
+1 000-255 Pan
+4SAC Chait Tabi
+1 000-255 Tilt
+AC37 Channel Table
+1 000-255 Dimmer
+AG37 Chaiinel Table
+1 000-255 Dimmer
+BC37 Channel Table
+1 000-255 Strobe
+BG37 Chaiinel Table
+1 000-255 Strobe
+CH58 Channel Table
+1 000-255 Focus
+C58 Chainel Vable
+1 000-255 Focus
+''', 'test200.pdf');
+    expect(result.fixture.modes.map((mode) => mode.name), [
+      '49AC',
+      '49BC',
+      'C162',
+      'CH27',
+      'AC37',
+      'BC37',
+      'CH58',
+    ]);
+    expect(result.fixture.modes.map((mode) => mode.channelIds.length), [
+      49,
+      49,
+      162,
+      27,
+      37,
+      37,
+      58,
+    ]);
+  });
+
+  test('keeps similar exact same-size personality codes distinct', () {
+    final result = fixtureFromManualText('''BETOPPER Model: EXACT58
+C58 Channel Table
+1 000-255 Pan
+CH58 Channel Table
+1 000-255 Tilt
+''', 'exact58.pdf');
+    expect(result.fixture.modes.map((mode) => mode.name), ['C58', 'CH58']);
+    expect(result.fixture.channels, hasLength(116));
+  });
+
+  test('removes scanned table grid artifacts and repairs 255 values', () {
+    final result = fixtureFromManualText('''BETOPPER Model: GRID6
+CH6 Channel Table
+[1 | 000.255 | X-axis
+[2 [000-265 | Y-axis
+[3 | 000255 | Dimming
+''', 'grid6.pdf');
+    final mode = result.fixture.modes.single;
+    final channels = mode.channelIds
+        .map(
+          (id) => result.fixture.channels.firstWhere((item) => item.id == id),
+        )
+        .toList();
+    expect(channels.take(3).map((channel) => channel.name), [
+      'Pan',
+      'Tilt',
+      'Dimmer',
+    ]);
+    expect(channels.take(3).map((channel) => channel.ranges.single.end), [
+      255,
+      255,
+      255,
+    ]);
+    expect(result.questions.single, contains('we read 3 of 6'));
+  });
+
+  test('recovers ordered channel functions when narrow OCR columns fail', () {
+    final result = fixtureFromManualText('''BETOPPER Model: SCAN6
+CH6 Channel Table
+.   DI0-2:.   X-axis
+2   Ili-2h:   X-axis fine-tuning
+a   Iii-2cs   Y-axis
+4   lll-@E   Y-axis fine-tuning
+§   lll-Z.   XY speed
+6   Ili-2   eset (200-209 is the reset value)
+''', 'scan6.pdf');
+    final mode = result.fixture.modes.single;
+    final channels = mode.channelIds
+        .map(
+          (id) => result.fixture.channels.firstWhere((item) => item.id == id),
+        )
+        .toList();
+    expect(channels.map((channel) => channel.name), [
+      'Pan',
+      'Pan fine',
+      'Tilt',
+      'Tilt fine',
+      'Pan / tilt speed',
+      'Reset / function',
+    ]);
+    expect(channels.first.ranges.single.confidence, .45);
+    expect(channels.last.ranges.single.safety, 'reset');
+    expect(result.questions, isNot(contains(contains('channel rows'))));
+  });
+
   test('local PDF corpus or public golden corpus remains discoverable', () {
     final corpus = Directory('../../testcorpus');
     expect(corpus.existsSync(), isTrue);

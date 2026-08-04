@@ -33,7 +33,10 @@ Future<ExtractedManual> extractManual(Uint8List bytes, String mime) async {
   final pages = json['pages'] as List;
   return ExtractedManual(
     text: pages
-        .map((page) => (page as Map)['text'] as String? ?? '')
+        .map((page) {
+          final item = page as Map;
+          return '=== DMXTRACT PAGE ${item['page']} ===\n${item['text'] as String? ?? ''}';
+        })
         .join('\n\n'),
     pageCount: json['pageCount'] as int? ?? pages.length,
     thumbnails: (json['thumbnails'] as List? ?? []).cast<String>(),
