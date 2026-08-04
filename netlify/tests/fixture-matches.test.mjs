@@ -71,3 +71,72 @@ test("proxy forwards a minimal query and strips provider-only data", async () =>
   assert.equal(JSON.stringify(body).includes("server-secret"), false);
   assert.equal(JSON.stringify(body).includes("private-user-name"), false);
 });
+
+test("GDTF Share login and list lookup keep credentials and cookies server-side", async () => {
+  const values = new Map([
+    ["GDTF_SHARE_USERNAME", "server-user"],
+    ["GDTF_SHARE_PASSWORD", "server-password"],
+  ]);
+  globalThis.Netlify = { env: { get: (name) => values.get(name) } };
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url: String(url), options });
+    if (String(url).endsWith("/login.php")) {
+      return new Response(JSON.stringify({ result: true }), {
+        status: 200,
+        headers: { "content-type": "application/json", "set-cookie": "PHPSESSID=session-secret; Path=/; HttpOnly; Secure" },
+      });
+    }
+    return new Response(JSON.stringify({
+      result: true,
+      list: [
+        {
+          rid: 42,
+          manufacturer: "Chauvet DJ",
+          fixture: "COLORpalette",
+          revision: "Release",
+          uploader: "Manuf.",
+          rating: "4.8",
+          version: "1.2",
+          creator: "private-uploader",
+          modes: [{ name: "27-channel", dmxfootprint: 27 }, { nested: { dmxfootprint: 15 } }],
+        },
+        { rid: 99, manufacturer: "Unrelated", fixture: "Other Light", modes: [] },
+      ],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  const result = await handler(new Request("https://dmxtract.test/api/fixture-matches", {
+    method: "POST",
+    headers: { Cookie: "browser-private=1", "X-Forwarded-For": "192.0.2.1" },
+    body: JSON.stringify({
+      manufacturer: "Chauvet DJ",
+      model: "COLORpalette",
+      modeFootprints: [27],
+      manualName: "private-manual.pdf",
+    }),
+  }));
+
+  assert.equal(result.status, 200);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].url, "https://gdtf-share.com/apis/public/login.php");
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    user: "server-user",
+    password: "server-password",
+  });
+  assert.equal(requests[0].options.headers.Cookie, undefined);
+  assert.equal(requests[1].url, "https://gdtf-share.com/apis/public/getList.php");
+  assert.equal(requests[1].options.headers.Cookie, "PHPSESSID=session-secret");
+
+  const body = await result.json();
+  assert.equal(body.enabled, true);
+  assert.equal(body.matches.length, 1);
+  assert.equal(body.matches[0].id, "42");
+  assert.equal(body.matches[0].source, "manufacturer");
+  assert.deepEqual(body.matches[0].modeFootprints, [27, 15]);
+  assert.equal(body.matches[0].url, "https://gdtf-share.com/share.php");
+  assert.equal(JSON.stringify(body).includes("server-user"), false);
+  assert.equal(JSON.stringify(body).includes("server-password"), false);
+  assert.equal(JSON.stringify(body).includes("session-secret"), false);
+  assert.equal(JSON.stringify(body).includes("private-uploader"), false);
+});

@@ -18,18 +18,21 @@ browser identifiers, bridge token, DMX network details, or hardware identity.
 Lookup runs only when both manufacturer and model were detected in manual text;
 identity inferred solely from a filename is never submitted.
 
-The Netlify function is a fixed proxy, not an open proxy. Its provider URL and
-bearer token exist only in the host secret manager. It forwards no browser
-cookies, IP headers, origin, referrer, or user agent, and it returns a small
+The Netlify function is a fixed integration, not an open proxy. A configured
+provider URL and bearer token, or GDTF Share username, password, and session
+cookie, exist only in the host secret manager and server-side function. It
+forwards no browser cookies, IP headers, origin, referrer, or user agent, and it returns a small
 allowlisted response that omits provider account names and uploader usernames.
 Provider errors are deliberately generic and do not log queries, credentials,
-URLs, cookies, or response bodies. With no provider URL configured, lookup is
-disabled and returns an empty result.
+URLs, cookies, or response bodies. With neither provider configuration nor a
+complete GDTF Share credential pair, lookup is disabled and returns an empty result.
 
 Self-hosters may configure their own compatible provider using
 `DMXTRACT_FIXTURE_LOOKUP_URL`, `DMXTRACT_FIXTURE_LOOKUP_TOKEN`, and an optional
-`DMXTRACT_FIXTURE_LINK_HOSTS` allowlist. Provider credentials must never be
-compiled into Flutter, placed in repository files, or exposed as MCP tools.
+`DMXTRACT_FIXTURE_LINK_HOSTS` allowlist, or connect directly with
+`GDTF_SHARE_USERNAME` and `GDTF_SHARE_PASSWORD`. Provider credentials must
+never be compiled into Flutter, placed in repository files, or exposed as MCP
+tools.
 
 ## MCP privacy boundary
 
