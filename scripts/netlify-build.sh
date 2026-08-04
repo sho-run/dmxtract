@@ -33,8 +33,11 @@ export PATH="$toolchain_root/flutter/bin:$PATH"
 flutter config --no-analytics
 cd "$repository_root/apps/web"
 flutter pub get
-flutter build web --release --base-href /
+flutter build web --release --base-href / \
+  --dart-define=FLUTTER_WEB_CANVASKIT_URL=/canvaskit/
 
 # Publish the canonical fixture schema at the stable URL embedded in projects.
 mkdir -p build/web/schemas
 cp "$repository_root/schemas/fixture-v1.json" build/web/schemas/fixture-v1.json
+node "$repository_root/scripts/check-static-links.mjs" build/web
+node "$repository_root/scripts/check-netlify-release.mjs" build/web

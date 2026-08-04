@@ -66,6 +66,13 @@ flutter:
   uses-material-design: true
 
   fonts:
+    # Flutter uses Roboto before the app theme is available. Map that family to
+    # the bundled Nunito files so startup never reaches Google Fonts.
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/Nunito-Regular.ttf
+        - asset: assets/fonts/Nunito-Bold.ttf
+          weight: 700
     - family: Nunito
       fonts:
         - asset: assets/fonts/Nunito-Regular.ttf
