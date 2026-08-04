@@ -1,0 +1,146 @@
+openapi: 3.1.0
+info:
+  title: DMXtract Bridge API
+  version: 1.0.0
+  description: Loopback-only API for explicitly approved DMX fixture tests.
+servers:
+  - url: http://127.0.0.1:46321/v1
+paths:
+  /health:
+    get:
+      operationId: bridgeStatus
+      responses:
+        "200": { description: Bridge status }
+  /outputs:
+    get:
+      operationId: bridgeListOutputs
+      responses:
+        "200": { description: Available network and USB transports }
+  /discovery/artnet:
+    get:
+      operationId: discoverArtNet
+      description: Sends a local ArtPoll and returns responding nodes. Does not send DMX levels.
+      responses:
+        "200":
+          description: Art-Net nodes found on the local network
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodes, maximumScanMs]
+                properties:
+                  maximumScanMs: { type: integer }
+                  nodes:
+                    type: array
+                    items: { $ref: "#/components/schemas/ArtNetNode" }
+  /pair/request:
+    post:
+      operationId: requestPairing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [origin]
+              properties:
+                origin: { type: string, format: uri }
+      responses:
+        "200": { description: Native approval request created }
+  /pair/confirm:
+    post:
+      operationId: confirmPairing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requestId, code]
+              properties:
+                requestId: { type: string }
+                code: { type: string, pattern: "^[0-9]{6}$" }
+      responses:
+        "200": { description: Origin-bound bearer token }
+        "401": { description: Approval code is incorrect or expired }
+  /test/begin:
+    post:
+      operationId: beginTest
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Exclusive output lease, initially blacked out }
+        "409": { description: Another controller holds the output lease }
+  /test/{leaseId}/channels:
+    post:
+      operationId: setChannels
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/leaseId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelFrame" }
+      responses:
+        "200": { description: Frame sent }
+        "423": { description: Risky output has not been unlocked }
+  /test/{leaseId}/heartbeat:
+    post:
+      operationId: heartbeat
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/leaseId" }]
+      responses:
+        "200": { description: Lease kept alive }
+  /test/{leaseId}/unlock:
+    post:
+      operationId: unlockRiskyOutput
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/leaseId" }]
+      responses:
+        "200": { description: Strobe, lamp, reset, and maintenance ranges unlocked }
+  /test/{leaseId}/blackout:
+    post:
+      operationId: blackout
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/leaseId" }]
+      responses:
+        "200": { description: Zero frame sent }
+  /test/{leaseId}/end:
+    post:
+      operationId: endTest
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/leaseId" }]
+      responses:
+        "200": { description: Output blacked out and lease released }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+  parameters:
+    leaseId:
+      name: leaseId
+      in: path
+      required: true
+      schema: { type: string }
+  schemas:
+    ArtNetNode:
+      type: object
+      required: [host, name, shortName, portCount]
+      properties:
+        host: { type: string, format: ipv4 }
+        name: { type: string }
+        shortName: { type: string }
+        portCount: { type: integer, minimum: 0 }
+    ChannelFrame:
+      type: object
+      required: [channels]
+      properties:
+        universe: { type: integer, minimum: 1, maximum: 63999, default: 1 }
+        risky: { type: boolean, default: false }
+        channels:
+          type: array
+          maxItems: 512
+          items:
+            type: object
+            required: [channel, value]
+            properties:
+              channel: { type: integer, minimum: 1, maximum: 512 }
+              value: { type: integer, minimum: 0, maximum: 255 }

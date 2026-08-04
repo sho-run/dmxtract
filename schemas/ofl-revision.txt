@@ -1,0 +1,8 @@
+Open Lighting Project / Open Fixture Library
+Revision: c3101ea4b216486dfe26f3966402391325b21cab
+Schema used for validation: schemas/fixture.json
+Pinned: 2026-08-03
+
+OFL requires exported files to use its canonical master schema URL. This commit pins the validator and compatibility test, not the literal `$schema` value in exported fixtures.
+
+Update this record only after Rust exporter fixtures validate against the new upstream schema and import through OFL's model.

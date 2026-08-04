@@ -1,0 +1,25 @@
+[build]
+command = "bash scripts/netlify-build.sh"
+publish = "apps/web/build/web"
+
+[build.environment]
+FLUTTER_WEB_CANVASKIT_URL = "/canvaskit/"
+
+[[redirects]]
+from = "/api/fixture-matches"
+to = "/.netlify/functions/fixture-matches"
+status = 200
+
+[[headers]]
+for = "/*"
+[headers.values]
+Content-Security-Policy = "default-src 'self'; img-src 'self' blob: data:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' http://127.0.0.1:46321 ws://127.0.0.1:46321; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
+Referrer-Policy = "no-referrer"
+Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+X-Content-Type-Options = "nosniff"
+X-Frame-Options = "DENY"
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200

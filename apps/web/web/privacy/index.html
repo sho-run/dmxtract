@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#151310">
+  <meta name="description" content="How DMXtract keeps fixture manuals, projects, and hardware access private.">
+  <link rel="canonical" href="https://dmxtract.sho.run/privacy/">
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <title>Privacy — DMXtract</title>
+  <style>
+    @font-face {
+      font-family: Nunito;
+      src: url('/assets/assets/fonts/Nunito-Regular.ttf') format('truetype');
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: Nunito;
+      src: url('/assets/assets/fonts/Nunito-ExtraBold.ttf') format('truetype');
+      font-weight: 800;
+      font-display: swap;
+    }
+    :root {
+      color-scheme: dark;
+      --amber: #e6a33a;
+      --gold: #efc272;
+      --teal: #61b5aa;
+      --text: #f2eee7;
+      --muted: #b8b0a7;
+      --iron: #242321;
+      --rust-dark: #573526;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font: 17px/1.55 Nunito, system-ui, sans-serif;
+      color: var(--text);
+      background-color: #151310;
+      background-image:
+        radial-gradient(circle at 18% 8%, rgba(163,93,61,.16), transparent 30rem),
+        repeating-linear-gradient(115deg, rgba(255,255,255,.018) 0 1px, transparent 1px 24px),
+        linear-gradient(145deg, #2b2520, #151310 52%, #1a1714);
+      background-attachment: fixed;
+    }
+    header, footer {
+      background: rgba(36,35,33,.96);
+      border-color: var(--rust-dark);
+      border-style: solid;
+      border-width: 0 0 1px;
+    }
+    header { padding: 18px 24px; }
+    footer {
+      border-width: 1px 0 0;
+      padding: 22px 24px;
+      text-align: center;
+      color: var(--muted);
+    }
+    nav, main { width: min(850px, calc(100% - 40px)); margin: auto; }
+    nav { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    main { padding: 54px 0 70px; }
+    h1, h2 { line-height: 1.15; }
+    h1 { margin: 0 0 12px; font-size: clamp(2.2rem, 7vw, 3.6rem); }
+    h2 { margin: 34px 0 8px; font-size: 1.35rem; }
+    p, li { color: var(--muted); }
+    strong { color: var(--text); }
+    a { color: var(--amber); text-underline-offset: 3px; }
+    a:hover, a:focus-visible { color: var(--gold); }
+    .brand { color: var(--text); font-size: 24px; font-weight: 800; text-decoration: none; }
+    .brand span { color: var(--amber); }
+    .card {
+      margin-top: 30px;
+      padding: 26px;
+      background: rgba(36,35,33,.97);
+      border: 1px solid var(--rust-dark);
+      border-radius: 16px;
+      box-shadow: 0 12px 34px rgba(0,0,0,.38);
+    }
+    .privacy-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      color: var(--teal);
+      background: rgba(31,212,196,.1);
+      border: 1px solid rgba(31,212,196,.4);
+      border-radius: 999px;
+      font-weight: 800;
+    }
+    @media (max-width: 540px) {
+      nav { align-items: flex-start; flex-direction: column; }
+      main { padding-top: 36px; }
+      .card { padding: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <nav aria-label="Primary navigation">
+      <a class="brand" href="/"><span>DMX</span>tract</a>
+      <a href="/">Back to the fixture builder</a>
+    </nav>
+  </header>
+  <main>
+    <div class="privacy-pill">Local-first by design</div>
+    <h1>Your manual stays with you.</h1>
+    <p>DMXtract is built so you can create, correct, test, and export a fixture profile without sending the fixture manual to us.</p>
+
+    <section class="card">
+      <h2>Manuals and photos</h2>
+      <p>PDFs, screenshots, and photos are read in your browser. DMXtract does not upload them to a hosted application service, AI service, or analytics provider.</p>
+
+      <h2>Projects saved in your browser</h2>
+      <p>Autosave stores the editable fixture project—not the original manual—in this browser's local storage. You can remove it by clearing site data for <strong>dmxtract.sho.run</strong>. A downloaded <strong>.dmxtract.json</strong> file stays wherever you save it.</p>
+
+      <h2>Optional fixture lookup</h2>
+      <p>If the site operator enables existing-profile lookup, DMXtract may send the detected manufacturer, model, and mode sizes to its same-origin lookup service. It does not send the manual, filename, channel table, bridge token, DMX network details, or hardware identity.</p>
+
+      <h2>Testing a physical light</h2>
+      <p>The optional DMXtract Bridge listens only on your own computer. Browser pairing is bound to the requesting website origin, expires when the bridge quits, and starts output at zero. Fixture output is not routed through a hosted service.</p>
+
+      <h2>Normal hosting data</h2>
+      <p>Like any website, the hosting provider necessarily processes ordinary request information such as your IP address to deliver files. DMXtract has no account requirement, advertising tracker, behavioral analytics, or document-upload endpoint.</p>
+
+      <h2>Links to other services</h2>
+      <p>If you choose a result from GDTF Share or follow a GitHub link, that service's privacy terms apply after you leave DMXtract.</p>
+
+      <h2>Questions or corrections</h2>
+      <p>Open an issue in the <a href="https://github.com/sho-run/dmxtract">DMXtract GitHub project</a>. Please do not attach a manual unless you have permission to redistribute it.</p>
+    </section>
+  </main>
+  <footer>
+    Last updated August 3, 2026 · Open source by
+    <a href="https://sho.run/">sho.run</a>
+  </footer>
+</body>
+</html>

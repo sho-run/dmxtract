@@ -1,0 +1,41 @@
+{
+  "schema": "https://dmxtract.sho.run/schemas/fixture-v1.json",
+  "schemaVersion": 1,
+  "id": "dmxtract-simple-rgbw",
+  "identity": {
+    "manufacturer": "DMXtract Test",
+    "model": "Simple RGBW",
+    "shortName": "RGBW",
+    "categories": ["Color Changer"],
+    "confidence": { "score": 1, "reason": "Synthetic test fixture" }
+  },
+  "physical": { "powerW": 40 },
+  "provenance": {
+    "sourceType": "synthetic",
+    "sourceName": "simple-rgbw",
+    "importedAt": "2026-08-03T00:00:00Z",
+    "notes": ["Synthetic fixture for format validation"]
+  },
+  "channels": [
+    { "id": "red", "name": "Red", "kind": "colorIntensity", "color": "RED", "fineOf": null, "wheelId": null, "ranges": [{ "start": 0, "end": 255, "name": "Red intensity", "capability": null, "wheelSlot": null, "safety": "normal", "confidence": { "score": 1, "reason": "" }, "source": null }], "confidence": { "score": 1, "reason": "" }, "source": null },
+    { "id": "green", "name": "Green", "kind": "colorIntensity", "color": "GREEN", "fineOf": null, "wheelId": null, "ranges": [{ "start": 0, "end": 255, "name": "Green intensity", "capability": null, "wheelSlot": null, "safety": "normal", "confidence": { "score": 1, "reason": "" }, "source": null }], "confidence": { "score": 1, "reason": "" }, "source": null },
+    { "id": "blue", "name": "Blue", "kind": "colorIntensity", "color": "BLUE", "fineOf": null, "wheelId": null, "ranges": [{ "start": 0, "end": 255, "name": "Blue intensity", "capability": null, "wheelSlot": null, "safety": "normal", "confidence": { "score": 1, "reason": "" }, "source": null }], "confidence": { "score": 1, "reason": "" }, "source": null },
+    { "id": "white", "name": "White", "kind": "colorIntensity", "color": "WHITE", "fineOf": null, "wheelId": null, "ranges": [{ "start": 0, "end": 255, "name": "White intensity", "capability": null, "wheelSlot": null, "safety": "normal", "confidence": { "score": 1, "reason": "" }, "source": null }], "confidence": { "score": 1, "reason": "" }, "source": null }
+  ],
+  "modes": [{
+    "id": "4ch",
+    "name": "4-channel",
+    "shortName": "4ch",
+    "breaks": 1,
+    "channels": [
+      { "channelId": "red", "offset": 1, "dmxBreak": 1 },
+      { "channelId": "green", "offset": 2, "dmxBreak": 1 },
+      { "channelId": "blue", "offset": 3, "dmxBreak": 1 },
+      { "channelId": "white", "offset": 4, "dmxBreak": 1 }
+    ],
+    "confidence": { "score": 1, "reason": "" }
+  }],
+  "wheels": [],
+  "matrix": null,
+  "geometry": { "body": true, "yoke": false, "head": false, "beam": true, "pixelEmitters": false }
+}

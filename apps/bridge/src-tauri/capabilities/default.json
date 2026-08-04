@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The informational bridge window has no shell permissions.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

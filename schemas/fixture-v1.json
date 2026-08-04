@@ -1,0 +1,728 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FixtureProject",
+  "type": "object",
+  "properties": {
+    "channels": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Channel"
+      }
+    },
+    "geometry": {
+      "$ref": "#/$defs/Geometry",
+      "default": {
+        "beam": true,
+        "body": true,
+        "head": false,
+        "pixelEmitters": false,
+        "yoke": false
+      }
+    },
+    "id": {
+      "type": "string"
+    },
+    "identity": {
+      "$ref": "#/$defs/Identity"
+    },
+    "matrix": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Matrix"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "modes": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Mode"
+      }
+    },
+    "physical": {
+      "$ref": "#/$defs/Physical",
+      "default": {
+        "depthMm": null,
+        "heightMm": null,
+        "lensMaxDegrees": null,
+        "lensMinDegrees": null,
+        "powerW": null,
+        "weightKg": null,
+        "widthMm": null
+      }
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance",
+      "default": {
+        "identityFromManual": false,
+        "importedAt": "",
+        "notes": [],
+        "sourceName": "",
+        "sourceType": ""
+      }
+    },
+    "schema": {
+      "type": "string",
+      "default": "https://dmxtract.sho.run/schemas/fixture-v1.json"
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "format": "uint8",
+      "default": 1,
+      "maximum": 255,
+      "minimum": 0
+    },
+    "wheels": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Wheel"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "identity"
+  ],
+  "$defs": {
+    "CapabilityRange": {
+      "type": "object",
+      "properties": {
+        "capability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChannelKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence",
+          "default": {
+            "reason": "",
+            "score": 1.0
+          }
+        },
+        "end": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "name": {
+          "type": "string"
+        },
+        "safety": {
+          "$ref": "#/$defs/SafetyClass",
+          "default": "normal"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "start": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "wheelSlot": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "name"
+      ]
+    },
+    "Channel": {
+      "type": "object",
+      "properties": {
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ColorComponent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence",
+          "default": {
+            "reason": "",
+            "score": 1.0
+          }
+        },
+        "fineOf": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gdtfAttribute": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gdtfFeature": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ChannelKind",
+          "default": "generic"
+        },
+        "name": {
+          "type": "string"
+        },
+        "ranges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CapabilityRange"
+          }
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wheelId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "ChannelAssignment": {
+      "type": "object",
+      "properties": {
+        "channelId": {
+          "type": "string"
+        },
+        "dmxBreak": {
+          "type": "integer",
+          "format": "uint16",
+          "default": 1,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "offset": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "channelId",
+        "offset"
+      ]
+    },
+    "ChannelKind": {
+      "type": "string",
+      "enum": [
+        "intensity",
+        "colorIntensity",
+        "pan",
+        "tilt",
+        "shutter",
+        "strobe",
+        "colorWheel",
+        "goboWheel",
+        "goboRotation",
+        "focus",
+        "zoom",
+        "prism",
+        "frost",
+        "speed",
+        "effect",
+        "maintenance",
+        "generic"
+      ]
+    },
+    "ColorComponent": {
+      "type": "string",
+      "enum": [
+        "RED",
+        "GREEN",
+        "BLUE",
+        "WHITE",
+        "AMBER",
+        "UV",
+        "CYAN",
+        "MAGENTA",
+        "YELLOW",
+        "LIME",
+        "INDIGO"
+      ]
+    },
+    "Confidence": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "default": ""
+        },
+        "score": {
+          "type": "number",
+          "format": "float",
+          "default": 1.0
+        }
+      }
+    },
+    "Geometry": {
+      "type": "object",
+      "properties": {
+        "beam": {
+          "type": "boolean",
+          "default": true
+        },
+        "body": {
+          "type": "boolean",
+          "default": true
+        },
+        "head": {
+          "type": "boolean",
+          "default": false
+        },
+        "pixelEmitters": {
+          "type": "boolean",
+          "default": false
+        },
+        "yoke": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "Identity": {
+      "type": "object",
+      "properties": {
+        "categories": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence",
+          "default": {
+            "reason": "",
+            "score": 1.0
+          }
+        },
+        "manufacturer": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "shortName": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "required": [
+        "manufacturer",
+        "model"
+      ]
+    },
+    "Matrix": {
+      "type": "object",
+      "properties": {
+        "groups": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PixelGroup"
+          }
+        },
+        "pixels": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Pixel"
+          }
+        },
+        "templateChannels": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "x": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "z": {
+          "type": "integer",
+          "format": "uint16",
+          "default": 1,
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ]
+    },
+    "Mode": {
+      "type": "object",
+      "properties": {
+        "breaks": {
+          "type": "integer",
+          "format": "uint16",
+          "default": 1,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "channels": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ChannelAssignment"
+          }
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence",
+          "default": {
+            "reason": "",
+            "score": 1.0
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "shortName": {
+          "type": "string",
+          "default": ""
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "Physical": {
+      "type": "object",
+      "properties": {
+        "depthMm": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "heightMm": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "lensMaxDegrees": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "lensMinDegrees": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "powerW": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "weightKg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "widthMm": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      }
+    },
+    "Pixel": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "x": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "z": {
+          "type": "integer",
+          "format": "uint16",
+          "default": 0,
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "x",
+        "y"
+      ]
+    },
+    "PixelGroup": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "pixelIds": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "Provenance": {
+      "type": "object",
+      "properties": {
+        "identityFromManual": {
+          "type": "boolean",
+          "default": false
+        },
+        "importedAt": {
+          "type": "string",
+          "default": ""
+        },
+        "notes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "sourceName": {
+          "type": "string",
+          "default": ""
+        },
+        "sourceType": {
+          "type": "string",
+          "default": "manual"
+        }
+      }
+    },
+    "SafetyClass": {
+      "type": "string",
+      "enum": [
+        "normal",
+        "strobe",
+        "lamp",
+        "reset",
+        "maintenance"
+      ]
+    },
+    "SourceRegion": {
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "number",
+          "format": "float"
+        },
+        "page": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "text": {
+          "type": "string",
+          "default": ""
+        },
+        "width": {
+          "type": "number",
+          "format": "float"
+        },
+        "x": {
+          "type": "number",
+          "format": "float"
+        },
+        "y": {
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "required": [
+        "page",
+        "x",
+        "y",
+        "width",
+        "height"
+      ]
+    },
+    "Wheel": {
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/Confidence",
+          "default": {
+            "reason": "",
+            "score": 1.0
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/WheelKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "slots": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WheelSlot"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind"
+      ]
+    },
+    "WheelKind": {
+      "type": "string",
+      "enum": [
+        "color",
+        "gobo",
+        "animation",
+        "prism",
+        "effects"
+      ]
+    },
+    "WheelSlot": {
+      "type": "object",
+      "properties": {
+        "color": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence",
+          "default": {
+            "reason": "",
+            "score": 1.0
+          }
+        },
+        "mediaFile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "number": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "number",
+        "name"
+      ]
+    }
+  }
+}

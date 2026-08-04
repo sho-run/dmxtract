@@ -1,0 +1,12 @@
+DMXtract Test — Simple RGBW
+
+DMX personality: 4CH
+
+DMX chart
+
+1  Red    000–255  Red intensity
+2  Green  000–255  Green intensity
+3  Blue   000–255  Blue intensity
+4  White  000–255  White intensity
+
+This is a synthetic, redistributable manual used only for extraction tests.

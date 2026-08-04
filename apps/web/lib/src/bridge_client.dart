@@ -1,0 +1,132 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+class ArtNetNode {
+  const ArtNetNode({
+    required this.host,
+    required this.name,
+    required this.shortName,
+    required this.portCount,
+  });
+  final String host;
+  final String name;
+  final String shortName;
+  final int portCount;
+
+  factory ArtNetNode.fromJson(Map<String, Object?> json) => ArtNetNode(
+    host: json['host'] as String,
+    name: json['name'] as String? ?? 'Art-Net node',
+    shortName: json['shortName'] as String? ?? '',
+    portCount: json['portCount'] as int? ?? 0,
+  );
+}
+
+class BridgeClient {
+  BridgeClient({this.baseUrl = 'http://127.0.0.1:46321'});
+  final String baseUrl;
+  String? token;
+  String? leaseId;
+
+  Future<bool> isAvailable({
+    Duration timeout = const Duration(seconds: 12),
+  }) async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/v1/health'))
+          .timeout(timeout);
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<List<ArtNetNode>> discoverArtNet() async {
+    final response = await http
+        .get(Uri.parse('$baseUrl/v1/discovery/artnet'))
+        .timeout(const Duration(seconds: 5));
+    if (response.statusCode >= 400) return const [];
+    final decoded = jsonDecode(response.body) as Map<String, Object?>;
+    return (decoded['nodes'] as List? ?? const [])
+        .map(
+          (item) => ArtNetNode.fromJson(Map<String, Object?>.from(item as Map)),
+        )
+        .toList();
+  }
+
+  Future<String> requestPair(String origin) async {
+    final response = await _post('/v1/pair/request', {
+      'origin': origin,
+    }, authorize: false);
+    return response['requestId'] as String;
+  }
+
+  Future<void> confirmPair(String requestId, String code) async {
+    final response = await _post('/v1/pair/confirm', {
+      'requestId': requestId,
+      'code': code,
+    }, authorize: false);
+    token = response['token'] as String;
+  }
+
+  Future<String> begin(String origin, Map<String, Object?> output) async {
+    final response = await _post('/v1/test/begin', {
+      'origin': origin,
+      'output': output,
+    });
+    leaseId = response['leaseId'] as String;
+    return response['output'] as String;
+  }
+
+  Future<void> setChannel(
+    int channel,
+    int value, {
+    int universe = 1,
+    bool risky = false,
+  }) async {
+    if (leaseId == null) return;
+    await _post('/v1/test/$leaseId/channels', {
+      'universe': universe,
+      'channels': [
+        {'channel': channel, 'value': value},
+      ],
+      'risky': risky,
+    });
+  }
+
+  Future<void> heartbeat() async {
+    if (leaseId != null) await _post('/v1/test/$leaseId/heartbeat', {});
+  }
+
+  Future<void> unlock() async {
+    if (leaseId != null) await _post('/v1/test/$leaseId/unlock', {});
+  }
+
+  Future<void> blackout() async {
+    if (leaseId != null) await _post('/v1/test/$leaseId/blackout', {});
+  }
+
+  Future<void> end() async {
+    if (leaseId != null) await _post('/v1/test/$leaseId/end', {});
+    leaseId = null;
+  }
+
+  Future<Map<String, Object?>> _post(
+    String path,
+    Map<String, Object?> body, {
+    bool authorize = true,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl$path'),
+      headers: {
+        'content-type': 'application/json',
+        if (authorize && token != null) 'authorization': 'Bearer $token',
+      },
+      body: jsonEncode(body),
+    );
+    final decoded = jsonDecode(response.body) as Map<String, Object?>;
+    if (response.statusCode >= 400) {
+      throw Exception(decoded['error'] ?? 'Bridge request failed');
+    }
+    return decoded;
+  }
+}

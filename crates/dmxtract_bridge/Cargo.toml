@@ -1,0 +1,22 @@
+[package]
+name = "dmxtract_bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+dmxtract_core = { path = "../dmxtract_core" }
+futures-util = "0.3"
+rand = "0.9"
+serde.workspace = true
+serde_json.workspace = true
+serialport = { version = "4.8", default-features = false }
+socket2 = { version = "0.6", features = ["all"] }
+thiserror.workspace = true
+tokio = { version = "1.47", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid.workspace = true

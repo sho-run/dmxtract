@@ -1,0 +1,560 @@
+import 'package:flutter/material.dart';
+import 'package:web/web.dart' as web;
+import 'app_state.dart';
+import 'theme.dart';
+
+class DmxScope extends InheritedNotifier<DmxtractState> {
+  const DmxScope({
+    super.key,
+    required DmxtractState state,
+    required super.child,
+  }) : super(notifier: state);
+  static DmxtractState of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<DmxScope>()!.notifier!;
+}
+
+class BeginnerPageShell extends StatelessWidget {
+  const BeginnerPageShell({super.key, required this.child});
+  final Widget child;
+  @override
+  Widget build(BuildContext context) {
+    final state = DmxScope.of(context);
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: DmxColors.canvas,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xff2b2520), DmxColors.canvas, Color(0xff1a1714)],
+          stops: [0, .48, 1],
+        ),
+      ),
+      child: Scaffold(
+        body: SafeArea(
+          child: SelectionArea(
+            child: Column(
+              children: [
+                _Header(state: state),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(24, 18, 24, 48),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1080),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          StepIndicator(
+                            step: state.step,
+                            onSelected: state.goTo,
+                          ),
+                          const SizedBox(height: 32),
+                          child,
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const _Footer(),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Header extends StatelessWidget {
+  const _Header({required this.state});
+  final DmxtractState state;
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
+    decoration: const BoxDecoration(
+      color: Color(0xf2252321),
+      border: Border(bottom: BorderSide(color: DmxColors.rust, width: 1.5)),
+      boxShadow: [
+        BoxShadow(
+          color: Color(0xaa000000),
+          blurRadius: 16,
+          offset: Offset(0, 5),
+        ),
+      ],
+    ),
+    child: Row(
+      children: [
+        InkWell(
+          onTap: () => state.goTo(0),
+          borderRadius: BorderRadius.circular(8),
+          child: const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            child: Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(
+                    text: 'DMX',
+                    style: TextStyle(color: DmxColors.amber),
+                  ),
+                  TextSpan(text: 'tract'),
+                ],
+              ),
+              style: TextStyle(
+                fontSize: 25,
+                fontWeight: FontWeight.w800,
+                color: DmxColors.text,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 18),
+        const Expanded(
+          child: Text(
+            'Build a fixture profile from the manual you already have.',
+            style: TextStyle(color: DmxColors.muted),
+          ),
+        ),
+        IconButton(
+          onPressed: state.canUndo ? state.undo : null,
+          tooltip: 'Undo last edit',
+          icon: const Icon(Icons.undo_outlined),
+        ),
+        IconButton(
+          onPressed: state.canRedo ? state.redo : null,
+          tooltip: 'Redo edit',
+          icon: const Icon(Icons.redo_outlined),
+        ),
+      ],
+    ),
+  );
+}
+
+class StepIndicator extends StatelessWidget {
+  const StepIndicator({
+    super.key,
+    required this.step,
+    required this.onSelected,
+  });
+  final int step;
+  final ValueChanged<int> onSelected;
+  static const labels = ['Add manual', 'Check', 'Test', 'Download'];
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final compact = constraints.maxWidth < 660;
+      return Row(
+        children: [
+          for (var index = 0; index < labels.length; index++) ...[
+            Expanded(
+              child: Semantics(
+                selected: index == step,
+                button: index <= step,
+                label: 'Step ${index + 1}: ${labels[index]}',
+                child: InkWell(
+                  onTap: index <= step ? () => onSelected(index) : null,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: compact
+                        ? _StepDot(
+                            index: index,
+                            selected: index == step,
+                            done: index < step,
+                          )
+                        : Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              _StepDot(
+                                index: index,
+                                selected: index == step,
+                                done: index < step,
+                              ),
+                              const SizedBox(width: 9),
+                              Flexible(
+                                child: Text(
+                                  labels[index],
+                                  style: TextStyle(
+                                    color: index == step
+                                        ? DmxColors.text
+                                        : DmxColors.muted,
+                                    fontWeight: index == step
+                                        ? FontWeight.w800
+                                        : FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                  ),
+                ),
+              ),
+            ),
+            if (index < labels.length - 1)
+              Container(
+                width: compact ? 10 : 28,
+                height: 1,
+                color: index < step ? DmxColors.amber : DmxColors.border,
+              ),
+          ],
+        ],
+      );
+    },
+  );
+}
+
+class _StepDot extends StatelessWidget {
+  const _StepDot({
+    required this.index,
+    required this.selected,
+    required this.done,
+  });
+  final int index;
+  final bool selected;
+  final bool done;
+  @override
+  Widget build(BuildContext context) => AnimatedContainer(
+    duration: const Duration(milliseconds: 180),
+    width: 30,
+    height: 30,
+    alignment: Alignment.center,
+    decoration: BoxDecoration(
+      shape: BoxShape.circle,
+      color: selected || done ? DmxColors.amber : DmxColors.inset,
+      border: Border.all(
+        color: selected || done ? DmxColors.bezel : DmxColors.border,
+        width: 2,
+      ),
+    ),
+    child: done
+        ? const Icon(Icons.check, size: 18, color: DmxColors.inset)
+        : Text(
+            '${index + 1}',
+            style: TextStyle(
+              fontFamily: 'JetBrains Mono',
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: selected ? DmxColors.inset : DmxColors.muted,
+            ),
+          ),
+  );
+}
+
+class PrivacyPill extends StatelessWidget {
+  const PrivacyPill({super.key});
+  @override
+  Widget build(BuildContext context) => const DecoratedBox(
+    decoration: BoxDecoration(
+      color: Color(0x261fd4c4),
+      borderRadius: BorderRadius.all(Radius.circular(99)),
+      border: Border.fromBorderSide(BorderSide(color: Color(0x661fd4c4))),
+    ),
+    child: Padding(
+      padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.lock_outline, color: DmxColors.teal, size: 17),
+          SizedBox(width: 7),
+          Text(
+            'Stays on this device',
+            style: TextStyle(
+              color: DmxColors.teal,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class ExplanationCallout extends StatelessWidget {
+  const ExplanationCallout({
+    super.key,
+    required this.title,
+    required this.body,
+    this.icon = Icons.lightbulb_outline,
+    this.warning = false,
+  });
+  final String title;
+  final String body;
+  final IconData icon;
+  final bool warning;
+  @override
+  Widget build(BuildContext context) {
+    final color = warning ? DmxColors.amber : DmxColors.bezel;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .08),
+        border: Border.all(color: color.withValues(alpha: .45)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color),
+          const SizedBox(width: 13),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: DmxColors.text,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(body),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ConfidenceMarker extends StatelessWidget {
+  const ConfidenceMarker({super.key, required this.score});
+  final double score;
+  @override
+  Widget build(BuildContext context) {
+    final uncertain = score < .65;
+    return Tooltip(
+      message: uncertain ? 'Please check this' : 'Found clearly in the manual',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+          color: (uncertain ? DmxColors.amber : DmxColors.green).withValues(
+            alpha: .13,
+          ),
+          borderRadius: BorderRadius.circular(99),
+        ),
+        child: Text(
+          uncertain ? 'Check' : 'Found',
+          style: TextStyle(
+            color: uncertain ? DmxColors.amber : DmxColors.green,
+            fontSize: 12,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class FixtureSummaryCard extends StatelessWidget {
+  const FixtureSummaryCard({
+    super.key,
+    required this.manufacturer,
+    required this.model,
+    required this.modes,
+    required this.controls,
+  });
+  final String manufacturer;
+  final String model;
+  final int modes;
+  final int controls;
+  @override
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(22),
+      child: Row(
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: DmxColors.rust.withValues(alpha: .22),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: DmxColors.rustDark),
+            ),
+            child: const Icon(
+              Icons.moving_outlined,
+              color: DmxColors.amber,
+              size: 29,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '$manufacturer $model',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                Text(
+                  '$modes ${modes == 1 ? 'mode' : 'modes'} · $controls controls',
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class DmxReadout extends StatelessWidget {
+  const DmxReadout({super.key, required this.channel, required this.value});
+  final int channel;
+  final int value;
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      _Readout(label: 'CHANNEL', value: channel.toString().padLeft(3, '0')),
+      const SizedBox(width: 18),
+      _Readout(label: 'VALUE', value: value.toString().padLeft(3, '0')),
+    ],
+  );
+}
+
+class _Readout extends StatelessWidget {
+  const _Readout({required this.label, required this.value});
+  final String label;
+  final String value;
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 142,
+    padding: const EdgeInsets.fromLTRB(16, 13, 16, 10),
+    decoration: BoxDecoration(
+      color: DmxColors.inset,
+      borderRadius: BorderRadius.circular(11),
+      border: Border.all(color: const Color(0xff5f4919)),
+      boxShadow: const [BoxShadow(color: Color(0x33ffab00), blurRadius: 14)],
+    ),
+    child: Column(
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontFamily: 'JetBrains Mono',
+            fontSize: 10,
+            letterSpacing: 1.5,
+            color: DmxColors.muted,
+          ),
+        ),
+        Text(
+          value,
+          style: const TextStyle(
+            fontFamily: 'DSEG7',
+            fontSize: 38,
+            color: DmxColors.amber,
+            height: 1.1,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class BridgeConnectionStatus extends StatelessWidget {
+  const BridgeConnectionStatus({
+    super.key,
+    required this.available,
+    this.active = false,
+    this.label = '',
+  });
+  final bool available;
+  final bool active;
+  final String label;
+  @override
+  Widget build(BuildContext context) {
+    final color = active
+        ? DmxColors.green
+        : available
+        ? DmxColors.amber
+        : DmxColors.muted;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          active ? Icons.usb_outlined : Icons.circle,
+          size: active ? 19 : 10,
+          color: color,
+        ),
+        const SizedBox(width: 8),
+        Text(
+          active
+              ? label
+              : available
+              ? 'Bridge ready'
+              : 'Bridge not running',
+          style: TextStyle(color: color, fontWeight: FontWeight.w800),
+        ),
+      ],
+    );
+  }
+}
+
+class AdvancedDisclosurePanel extends StatelessWidget {
+  const AdvancedDisclosurePanel({
+    super.key,
+    required this.title,
+    required this.child,
+  });
+  final String title;
+  final Widget child;
+  @override
+  Widget build(BuildContext context) => Card(
+    child: ExpansionTile(
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+      childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
+      children: [child],
+    ),
+  );
+}
+
+class _Footer extends StatelessWidget {
+  const _Footer();
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+    decoration: const BoxDecoration(
+      color: Color(0xf2252321),
+      border: Border(top: BorderSide(color: DmxColors.rustDark, width: 1.5)),
+    ),
+    child: Wrap(
+      alignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 18,
+      runSpacing: 8,
+      children: [
+        const _FooterLink(
+          label: 'GitHub',
+          url: 'https://github.com/sho-run/dmxtract',
+        ),
+        const _FooterLink(label: 'Privacy', url: '/privacy/'),
+        const Text('Open source by', style: TextStyle(color: DmxColors.muted)),
+        const _FooterLink(label: 'sho.run', url: 'https://sho.run/'),
+      ],
+    ),
+  );
+}
+
+class _FooterLink extends StatelessWidget {
+  const _FooterLink({required this.label, required this.url});
+  final String label;
+  final String url;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: label,
+    link: true,
+    child: TextButton(
+      onPressed: () => web.window.open(url, '_blank', 'noopener,noreferrer'),
+      style: TextButton.styleFrom(
+        foregroundColor: DmxColors.muted,
+        minimumSize: const Size(44, 44),
+        padding: const EdgeInsets.symmetric(horizontal: 5),
+      ),
+      child: ExcludeSemantics(
+        child: Text(label, style: const TextStyle(color: DmxColors.muted)),
+      ),
+    ),
+  );
+}

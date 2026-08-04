@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">DMXtract</title>
+  <desc id="desc">Three lighting-control faders on a dark tool panel.</desc>
+  <defs>
+    <linearGradient id="case" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34302b"/>
+      <stop offset="1" stop-color="#151310"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#efc272"/>
+      <stop offset="1" stop-color="#c77a2f"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="#151310"/>
+  <rect x="42" y="42" width="428" height="428" rx="68" fill="url(#case)" stroke="#62564a" stroke-width="10"/>
+  <g fill="#0e0d0c" stroke="#62564a" stroke-width="8">
+    <rect x="122" y="105" width="36" height="302" rx="18"/>
+    <rect x="238" y="105" width="36" height="302" rx="18"/>
+    <rect x="354" y="105" width="36" height="302" rx="18"/>
+  </g>
+  <g stroke="#151310" stroke-width="8">
+    <rect x="91" y="168" width="98" height="62" rx="20" fill="url(#amber)"/>
+    <rect x="207" y="286" width="98" height="62" rx="20" fill="#61b5aa"/>
+    <rect x="323" y="215" width="98" height="62" rx="20" fill="#a35d3d"/>
+  </g>
+  <g fill="#b8b0a7">
+    <circle cx="140" cy="442" r="9"/>
+    <circle cx="256" cy="442" r="9"/>
+    <circle cx="372" cy="442" r="9"/>
+  </g>
+</svg>
