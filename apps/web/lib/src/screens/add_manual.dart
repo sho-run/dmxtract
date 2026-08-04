@@ -1,19 +1,10 @@
-import 'dart:typed_data';
-import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import '../app_state.dart';
 import '../components.dart';
 import '../theme.dart';
 
-class AddManualScreen extends StatefulWidget {
+class AddManualScreen extends StatelessWidget {
   const AddManualScreen({super.key});
-
-  @override
-  State<AddManualScreen> createState() => _AddManualScreenState();
-}
-
-class _AddManualScreenState extends State<AddManualScreen> {
-  bool _dragging = false;
 
   @override
   Widget build(BuildContext context) {
@@ -39,106 +30,66 @@ class _AddManualScreenState extends State<AddManualScreen> {
           ),
         ),
         const SizedBox(height: 26),
-        DropTarget(
-          onDragEntered: (_) {
-            if (!state.busy) setState(() => _dragging = true);
-          },
-          onDragExited: (_) {
-            if (_dragging) setState(() => _dragging = false);
-          },
-          onDragDone: (details) async {
-            if (_dragging) setState(() => _dragging = false);
-            if (state.busy) return;
-            if (details.files.isEmpty) return;
-            final file = details.files.first;
-            final Uint8List bytes = await file.readAsBytes();
-            await state.ingest(
-              bytes,
-              file.name,
-              file.mimeType ?? _mime(file.name),
-            );
-          },
-          child: InkWell(
-            onTap: state.busy ? null : state.pickManual,
-            borderRadius: BorderRadius.circular(18),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              width: double.infinity,
-              constraints: const BoxConstraints(minHeight: 320),
-              padding: const EdgeInsets.all(32),
-              decoration: BoxDecoration(
-                color: _dragging
-                    ? DmxColors.amber.withValues(alpha: .13)
-                    : DmxColors.panel.withValues(alpha: .94),
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(
-                  color: _dragging
-                      ? DmxColors.amber
-                      : state.error == null
-                      ? DmxColors.rust
-                      : DmxColors.red,
-                  width: _dragging ? 3 : 2,
-                ),
-                boxShadow: _dragging
-                    ? [
-                        BoxShadow(
-                          color: DmxColors.amber.withValues(alpha: .18),
-                          blurRadius: 24,
-                          spreadRadius: 2,
-                        ),
-                      ]
-                    : null,
+        InkWell(
+          onTap: state.busy ? null : state.pickManual,
+          borderRadius: BorderRadius.circular(18),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            width: double.infinity,
+            constraints: const BoxConstraints(minHeight: 320),
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: DmxColors.panel.withValues(alpha: .94),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(
+                color: state.error == null ? DmxColors.rust : DmxColors.red,
+                width: 2,
               ),
-              child: state.busy
-                  ? _Progress(state: state)
-                  : Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Container(
-                          width: 72,
-                          height: 72,
-                          decoration: BoxDecoration(
-                            color: DmxColors.rust.withValues(alpha: .2),
-                            borderRadius: BorderRadius.circular(18),
-                          ),
-                          child: const Icon(
-                            Icons.file_download_outlined,
-                            size: 38,
-                            color: DmxColors.amber,
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        Text(
-                          _dragging
-                              ? 'Let go to add this file'
-                              : 'Drop your light’s manual here',
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.headlineMedium,
-                        ),
-                        const SizedBox(height: 7),
-                        const Text(
-                          'PDF, screenshot, or phone photo',
-                          style: TextStyle(
-                            fontSize: 17,
-                            color: DmxColors.muted,
-                          ),
-                        ),
-                        const SizedBox(height: 7),
-                        const Text(
-                          'You can also reopen a .dmxtract.json project.',
-                          style: TextStyle(color: DmxColors.muted),
-                        ),
-                        const SizedBox(height: 20),
-                        FilledButton.icon(
-                          onPressed: state.pickManual,
-                          icon: const Icon(Icons.folder_open_outlined),
-                          label: const Text('Choose manual'),
-                        ),
-                        const SizedBox(height: 18),
-                        const PrivacyPill(),
-                      ],
-                    ),
             ),
+            child: state.busy
+                ? _Progress(state: state)
+                : Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Container(
+                        width: 72,
+                        height: 72,
+                        decoration: BoxDecoration(
+                          color: DmxColors.rust.withValues(alpha: .2),
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: const Icon(
+                          Icons.file_download_outlined,
+                          size: 38,
+                          color: DmxColors.amber,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        'Drop your light’s manual here',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.headlineMedium,
+                      ),
+                      const SizedBox(height: 7),
+                      const Text(
+                        'PDF, screenshot, or phone photo',
+                        style: TextStyle(fontSize: 17, color: DmxColors.muted),
+                      ),
+                      const SizedBox(height: 7),
+                      const Text(
+                        'You can also reopen a .dmxtract.json project.',
+                        style: TextStyle(color: DmxColors.muted),
+                      ),
+                      const SizedBox(height: 20),
+                      FilledButton.icon(
+                        onPressed: state.pickManual,
+                        icon: const Icon(Icons.folder_open_outlined),
+                        label: const Text('Choose manual'),
+                      ),
+                      const SizedBox(height: 18),
+                      const PrivacyPill(),
+                    ],
+                  ),
           ),
         ),
         if (state.error != null)
@@ -207,15 +158,6 @@ class _AddManualScreenState extends State<AddManualScreen> {
           ),
       ],
     );
-  }
-
-  String _mime(String name) {
-    final lower = name.toLowerCase();
-    if (lower.endsWith('.pdf')) return 'application/pdf';
-    if (lower.endsWith('.json')) return 'application/json';
-    if (lower.endsWith('.png')) return 'image/png';
-    if (lower.endsWith('.webp')) return 'image/webp';
-    return 'image/jpeg';
   }
 }
 

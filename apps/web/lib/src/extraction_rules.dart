@@ -12,12 +12,24 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
     r'(?:Model\s*:?\s*|moving.head[^A-Z0-9]{0,30})([A-Z]{1,6}[- ]?\d{2,5}[A-Z]?)',
     caseSensitive: false,
   ).firstMatch(flat);
+  final productLineModelMatch = RegExp(
+    r'\b((?:COLORado|MAC)\s+[A-Za-z0-9][A-Za-z0-9 -]{1,40}?)\s+User Manual\b',
+    caseSensitive: false,
+  ).firstMatch(flat);
   final titledModelMatch = RegExp(
     r'\b([A-Z][A-Za-z0-9_-]{2,30})[™®]?\s+(?:user|owner.?s?)\s+manual\b',
     caseSensitive: false,
   ).firstMatch(flat);
+  final manualTitleMatch = RegExp(
+    r'^\s*(.{3,70}?)\s+User Manual(?:\s+(?:Rev\.?|Revision)\s*[A-Z0-9.]+)?\s*$',
+    caseSensitive: false,
+    multiLine: true,
+  ).firstMatch(text);
+  final titleModel = _modelFromManualTitle(manualTitleMatch?.group(1));
   final modelFromManual =
+      productLineModelMatch?.group(1)?.trim() ??
       numberedModelMatch?.group(1)?.replaceAll(' ', '') ??
+      titleModel ??
       titledModelMatch?.group(1);
   final fallback = _modelFromFilename(sourceName);
   final model = modelFromManual ?? fallback ?? 'Unknown fixture';
@@ -108,50 +120,142 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
   if (!_has(flat, r'color wheel')) {
     _addColorComponents(known, flat);
   }
-  final usableModes = modeCounts.take(8).toList();
+  final namedModes = _namedDmxModeTables(text);
+  final contextualModes = namedModes.isEmpty
+      ? _contextualPersonalityTables(text)
+      : const <_DetectedModeTable>[];
+  final structuredModes = namedModes.isNotEmpty
+      ? namedModes
+      : contextualModes.isNotEmpty
+      ? contextualModes
+      : _codedChannelTables(text);
+  final virtualColorWheelRanges = _virtualColorWheelRanges(text);
+  final codedSupplementalRanges = _codedSupplementalRanges(text);
+  final usableModes = modeCounts.toList();
   final hasDmxTable = RegExp(
     r'(channel value table|dmx channel assignments(?: and values)?|dmx charts?|dmx traits|dmx channels?\s*[:\-]?\s*\d)',
     caseSensitive: false,
   ).hasMatch(flat);
-  final count = usableModes.isNotEmpty
+  final count = structuredModes.isNotEmpty
+      ? structuredModes
+            .map((mode) => mode.channelCount)
+            .reduce((a, b) => a > b ? a : b)
+      : usableModes.isNotEmpty
       ? usableModes.reduce((a, b) => a > b ? a : b)
       : hasDmxTable
       ? known.length
       : 0;
   final channels = <DmxChannel>[];
-  final tableChannels = _tableChannels(text, count);
+  final modes = <FixtureMode>[];
+  final tableChannels = structuredModes.isEmpty
+      ? _tableChannels(text, count)
+      : const <_DetectedChannel>[];
   final useTableChannels =
       tableChannels.length >= 4 && tableChannels.length >= (count * .5).ceil();
   final isLb150 =
       model.toLowerCase().contains('lb150') ||
       _has(flat, r'5600\s*k.*grass\s+green.*reset.?function');
-  for (var index = 0; index < count; index++) {
-    final definition = useTableChannels && index < tableChannels.length
-        ? tableChannels[index]
-        : index < known.length
-        ? known[index]
-        : _DetectedChannel(name: 'Channel ${index + 1}', kind: 'generic');
-    var channelId = slug(definition.name);
-    if (channels.any((item) => item.id == channelId)) {
-      channelId = '$channelId-${index + 1}';
+  if (structuredModes.isNotEmpty) {
+    for (final detectedMode in structuredModes) {
+      final modeChannelIds = <String>[];
+      final coarseIds = <String, String>{};
+      for (var index = 0; index < detectedMode.channelCount; index++) {
+        final definition = detectedMode.channels[index];
+        final supplementalRanges = _supplementalRangesFor(
+          definition,
+          codedSupplementalRanges,
+        );
+        final channelId =
+            '${slug(detectedMode.code)}-${(index + 1).toString().padLeft(3, '0')}-${slug(definition.name)}';
+        final relationshipKey = _relationshipKey(definition);
+        final fineOf = definition.fineOf == null
+            ? null
+            : coarseIds[definition.fineOf];
+        if (definition.fineOf == null) {
+          coarseIds[relationshipKey] = channelId;
+        }
+        channels.add(
+          DmxChannel(
+            id: channelId,
+            name: definition.name,
+            kind: definition.kind,
+            fineOf: fineOf,
+            color: definition.color,
+            confidence: definition.confidence,
+            ranges: supplementalRanges.isNotEmpty
+                ? supplementalRanges
+                : definition.ranges?.isNotEmpty == true
+                ? definition.ranges!
+                : definition.kind == 'colorWheel' &&
+                      virtualColorWheelRanges.isNotEmpty
+                ? virtualColorWheelRanges
+                : _knownRanges(definition.kind, isLb150: isLb150),
+          ),
+        );
+        modeChannelIds.add(channelId);
+      }
+      modes.add(
+        FixtureMode(
+          id: 'mode-${slug(detectedMode.code)}',
+          name: detectedMode.code,
+          shortName: detectedMode.code,
+          channelIds: modeChannelIds,
+          breaks: (detectedMode.channelCount / 512).ceil().clamp(1, 64),
+        ),
+      );
     }
-    channels.add(
-      DmxChannel(
-        id: channelId,
-        name: definition.name,
-        kind: definition.kind,
-        fineOf: definition.fineOf,
-        color: definition.color,
-        confidence:
-            definition.kind == 'generic' &&
-                definition.name.startsWith('Channel ')
-            ? .35
-            : .9,
-        ranges: definition.ranges?.isNotEmpty == true
-            ? definition.ranges!
-            : _knownRanges(definition.kind, isLb150: isLb150),
-      ),
-    );
+  } else {
+    for (var index = 0; index < count; index++) {
+      final definition = useTableChannels && index < tableChannels.length
+          ? tableChannels[index]
+          : index < known.length
+          ? known[index]
+          : _DetectedChannel(
+              name: 'Channel ${index + 1}',
+              kind: 'generic',
+              confidence: .35,
+            );
+      var channelId = slug(definition.name);
+      if (channels.any((item) => item.id == channelId)) {
+        channelId = '$channelId-${index + 1}';
+      }
+      channels.add(
+        DmxChannel(
+          id: channelId,
+          name: definition.name,
+          kind: definition.kind,
+          fineOf: definition.fineOf,
+          color: definition.color,
+          confidence: definition.confidence,
+          ranges: definition.ranges?.isNotEmpty == true
+              ? definition.ranges!
+              : _knownRanges(definition.kind, isLb150: isLb150),
+        ),
+      );
+    }
+    final simplestMode = usableModes.isEmpty
+        ? count
+        : usableModes.reduce((a, b) => a < b ? a : b);
+    for (final modeSize
+        in count == 0
+            ? <int>[]
+            : usableModes.isEmpty
+            ? [count]
+            : usableModes) {
+      modes.add(
+        FixtureMode(
+          id: 'mode-$modeSize',
+          name: modeSize == count
+              ? 'Full control'
+              : modeSize == simplestMode
+              ? 'Simple'
+              : '$modeSize-channel mode',
+          shortName: '${modeSize}ch',
+          channelIds: channels.take(modeSize).map((item) => item.id).toList(),
+          breaks: (modeSize / 512).ceil().clamp(1, 64),
+        ),
+      );
+    }
   }
   final wheels = <Map<String, Object?>>[];
   if (known.any((item) => item.kind == 'colorWheel')) {
@@ -160,7 +264,17 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
       r'5600\s*k.*3200\s*k.*grass\s+green.*rose\s+red',
     );
     final slotCount = _wheelSlotCount(flat, 'color');
-    final labels = isLb150Wheel
+    final virtualLabels = virtualColorWheelRanges
+        .where(
+          (range) =>
+              range.start <= 106 &&
+              !range.name.toLowerCase().contains('no function'),
+        )
+        .map((range) => range.name)
+        .toList();
+    final labels = virtualLabels.isNotEmpty
+        ? virtualLabels
+        : isLb150Wheel
         ? const [
             'White',
             '5600K',
@@ -186,7 +300,11 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
         'Color wheel',
         'color',
         labels,
-        isLb150Wheel ? .72 : .35,
+        virtualLabels.isNotEmpty
+            ? .95
+            : isLb150Wheel
+            ? .72
+            : .35,
       ),
     );
     channels
@@ -206,9 +324,6 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
         .where((item) => item.kind == 'goboWheel')
         .forEach((item) => item.wheelId = 'gobo-wheel');
   }
-  final simplestMode = usableModes.isEmpty
-      ? count
-      : usableModes.reduce((a, b) => a < b ? a : b);
   final fixture = FixtureProject(
     id: '${slug(manufacturer)}-${slug(model)}',
     manufacturer: manufacturer,
@@ -218,25 +333,7 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
         modelFromManual != null &&
         manufacturerFromManual != 'Unknown manufacturer',
     channels: channels,
-    modes: [
-      for (final modeSize
-          in count == 0
-              ? <int>[]
-              : usableModes.isEmpty
-              ? [count]
-              : usableModes)
-        FixtureMode(
-          id: 'mode-$modeSize',
-          name: modeSize == count
-              ? 'Full control'
-              : modeSize == simplestMode
-              ? 'Simple'
-              : '$modeSize-channel mode',
-          shortName: '${modeSize}ch',
-          channelIds: channels.take(modeSize).map((item) => item.id).toList(),
-          breaks: (modeSize / 512).ceil().clamp(1, 64),
-        ),
-    ],
+    modes: modes,
     wheels: wheels,
     physical: flat.contains('236x174x329')
         ? {
@@ -265,13 +362,22 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
       'We could not find a DMX channel table in this manual.',
     if (manufacturer.startsWith('Unknown')) 'We could not find the maker name.',
     if (model.startsWith('Unknown')) 'We could not find the model name.',
-    ...channels
-        .where((item) => item.confidence < .6)
-        .take(3)
-        .map(
-          (item) =>
-              'Check what channel ${channels.indexOf(item) + 1} controls.',
-        ),
+    if (structuredModes.isNotEmpty)
+      ...structuredModes
+          .where((mode) => mode.parsedCount < mode.channelCount)
+          .take(6)
+          .map(
+            (mode) =>
+                '${mode.code}: we read ${mode.parsedCount} of ${mode.channelCount} channel rows. Check the highlighted controls.',
+          )
+    else
+      ...channels
+          .where((item) => item.confidence < .6)
+          .take(3)
+          .map(
+            (item) =>
+                'Check what channel ${channels.indexOf(item) + 1} controls.',
+          ),
     if (wheels.any(
       (wheel) =>
           wheel['kind'] == 'color' &&
@@ -292,10 +398,36 @@ String _manufacturer(String value) {
   final lower = value.toLowerCase();
   if (lower.contains('betopper')) return 'Betopper';
   if (lower.contains('shehds')) return 'SHEHDS';
-  if (lower.contains('chauvet')) return 'Chauvet DJ';
+  if (lower.contains('chauvet')) {
+    return lower.contains('chauvet professional') ||
+            lower.contains('colorado pxl')
+        ? 'Chauvet Professional'
+        : 'Chauvet DJ';
+  }
+  if (lower.contains('martin')) return 'Martin';
   if (lower.contains('altman')) return 'Altman';
   if (RegExp(r'(^|[^a-z])adj([^a-z]|$)').hasMatch(lower)) return 'ADJ';
   return 'Unknown manufacturer';
+}
+
+String? _modelFromManualTitle(String? raw) {
+  if (raw == null) return null;
+  var value = raw
+      .replaceAll(RegExp(r'[™®]'), '')
+      .replaceFirst(
+        RegExp(
+          r'^\s*(?:Chauvet(?:\s+Professional)?|Martin)\s+',
+          caseSensitive: false,
+        ),
+        '',
+      )
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  if (value.isEmpty || _looksLikePageFurniture(value)) return null;
+  if (RegExp(r'^(?:safety|user|owner)', caseSensitive: false).hasMatch(value)) {
+    return null;
+  }
+  return value;
 }
 
 String? _modelFromFilename(String name) {
@@ -404,6 +536,247 @@ Map<String, Object?> _wheel(
   },
 };
 
+List<DmxRange> _virtualColorWheelRanges(String text) {
+  final headings = RegExp(
+    r'^\s*Virtual colou?r wheel\*?\s*$',
+    caseSensitive: false,
+    multiLine: true,
+  ).allMatches(text);
+  for (final heading in headings) {
+    final available = text.substring(
+      heading.end,
+      (heading.end + 8000).clamp(0, text.length),
+    );
+    final end = RegExp(
+      r'^\s*(?:\d{1,4}\s+)?(?:Zoom|Beamshaper|Pan / tilt|Compact DMX Mode)\*?\s*$',
+      caseSensitive: false,
+      multiLine: true,
+    ).firstMatch(available)?.start;
+    final section = available.substring(0, end ?? available.length);
+    final ranges = <DmxRange>[];
+    for (final rawLine in section.split(RegExp(r'[\r\n]+'))) {
+      final match = RegExp(
+        r'(\d{1,3})\s*[-–—]\s*(\d{1,3})\s+(.+?)\s*$',
+      ).firstMatch(rawLine);
+      if (match == null) continue;
+      final start = int.parse(match.group(1)!);
+      final finish = int.parse(match.group(2)!);
+      if (start > finish || finish > 255) continue;
+      var name = _cleanFunction(match.group(3)!);
+      name = name
+          .replaceFirst(RegExp(r'\s+Fade\s+\d+\s*$', caseSensitive: false), '')
+          .replaceFirst(RegExp(r'\s+Snap\s+\d+\s*$', caseSensitive: false), '')
+          .trim();
+      if (name.isEmpty || _looksLikePageFurniture(name)) continue;
+      if (ranges.any((range) => range.start == start && range.end == finish)) {
+        continue;
+      }
+      ranges.add(
+        DmxRange(
+          start: start,
+          end: finish,
+          name: name.substring(0, name.length.clamp(0, 80)),
+          confidence: .95,
+        ),
+      );
+    }
+    ranges.sort((left, right) => left.start.compareTo(right.start));
+    if (ranges.any((range) => range.start == 0 && range.end == 10) &&
+        ranges.where((range) => range.start >= 11 && range.end <= 106).length >=
+            40) {
+      return ranges;
+    }
+  }
+  return const [];
+}
+
+Map<String, List<DmxRange>> _codedSupplementalRanges(String text) {
+  final result = <String, List<DmxRange>>{};
+  final shutter = _appendixTableRanges(
+    text,
+    r'Shutter',
+    r'Mode\s+table\s*[2②]',
+  );
+  if (shutter.length >= 10 &&
+      shutter.first.start == 0 &&
+      shutter.last.end == 255) {
+    result['shutter'] = shutter;
+  }
+
+  final flat = text.replaceAll(RegExp(r'\s+'), ' ');
+  if (RegExp(
+    r'10\s*[-–—]\s*13\s+Colou?r temperature 1.*246\s*[-–—]\s*249\s+Colou?r temperature 60.*254\s*[-–—]\s*255\s+Colou?r temperature 62',
+    caseSensitive: false,
+  ).hasMatch(flat)) {
+    result['color-temperature'] = [
+      DmxRange(start: 0, end: 9, name: 'No function'),
+      for (var index = 1; index <= 62; index++)
+        DmxRange(
+          start: 10 + (index - 1) * 4,
+          end: (13 + (index - 1) * 4).clamp(0, 255),
+          name: 'Color temperature $index',
+          confidence: .9,
+        ),
+    ];
+  }
+
+  if (RegExp(
+    r'17\s*[-–—]\s*55\s+Mode 9.*57\s*[-–—]\s*95\s+Mode 11.*136\s*[-–—]\s*174\s+Mode 15.*176\s*[-–—]\s*214\s+Mode 17',
+    caseSensitive: false,
+  ).hasMatch(flat)) {
+    const values = <(int, int, String)>[
+      (0, 0, 'No function'),
+      (1, 2, 'Mode 1'),
+      (3, 3, 'Mode 2'),
+      (4, 5, 'Mode 3'),
+      (6, 6, 'Mode 4'),
+      (7, 9, 'Mode 5'),
+      (10, 12, 'Mode 6'),
+      (13, 15, 'Mode 7'),
+      (16, 16, 'Mode 8'),
+      (17, 55, 'Mode 9'),
+      (56, 56, 'Mode 10'),
+      (57, 95, 'Mode 11'),
+      (96, 96, 'Mode 12'),
+      (97, 134, 'Mode 13'),
+      (135, 135, 'Mode 14'),
+      (136, 174, 'Mode 15'),
+      (175, 175, 'Pattern 16'),
+      (176, 214, 'Mode 17'),
+      (215, 215, 'Mode 18'),
+      (216, 246, 'Mode 19'),
+      (247, 247, 'Mode 20'),
+      (248, 248, 'Mode 21'),
+      (249, 249, 'Mode 22'),
+      (250, 250, 'Mode 23'),
+      (251, 251, 'Mode 24'),
+      (252, 252, 'Mode 25'),
+      (253, 253, 'Mode 26'),
+      (254, 254, 'Mode 27'),
+      (255, 255, 'Mode 28'),
+    ];
+    result['mode-1'] = [
+      for (final value in values)
+        DmxRange(
+          start: value.$1,
+          end: value.$2,
+          name: value.$3,
+          confidence: .9,
+        ),
+    ];
+  }
+
+  if (RegExp(
+    r'4\s*[-–—]\s*10\s+Mode 1.*235\s*[-–—]\s*241\s+Mode 34.*249\s*[-–—]\s*255\s+Mode 36',
+    caseSensitive: false,
+  ).hasMatch(flat)) {
+    result['mode-2'] = [
+      DmxRange(start: 0, end: 3, name: 'No function'),
+      for (var index = 1; index <= 36; index++)
+        DmxRange(
+          start: 4 + (index - 1) * 7,
+          end: 10 + (index - 1) * 7,
+          name: 'Mode $index',
+          confidence: .9,
+        ),
+    ];
+  }
+
+  if (RegExp(
+    r'0\s*[-–—]\s*7\s+Color 0.*248\s*[-–—]\s*251\s+Color 61.*252\s*[-–—]\s*255\s+Color 62',
+    caseSensitive: false,
+  ).hasMatch(flat)) {
+    result['background-color'] = [
+      DmxRange(start: 0, end: 7, name: 'Color 0'),
+      for (var index = 1; index <= 62; index++)
+        DmxRange(
+          start: 4 + index * 4,
+          end: 7 + index * 4,
+          name: 'Color $index',
+          confidence: .9,
+        ),
+    ];
+  }
+  return result;
+}
+
+List<DmxRange> _appendixTableRanges(
+  String text,
+  String headingPattern,
+  String stopPattern,
+) {
+  final headings = RegExp(
+    '^\\s*$headingPattern\\s*\$',
+    caseSensitive: false,
+    multiLine: true,
+  ).allMatches(text);
+  for (final heading in headings) {
+    final available = text.substring(
+      heading.end,
+      (heading.end + 8000).clamp(0, text.length),
+    );
+    final end = RegExp(
+      '^\\s*$stopPattern\\s*\$',
+      caseSensitive: false,
+      multiLine: true,
+    ).firstMatch(available)?.start;
+    if (end == null) continue;
+    final ranges = <DmxRange>[];
+    for (final rawLine
+        in available.substring(0, end).split(RegExp(r'[\r\n]+'))) {
+      final match = RegExp(
+        r'^\s*(?:\d{1,3}\s+)?(\d{1,3})\s*[-–—]\s*(\d{1,3})\s+(.+?)\s*$',
+      ).firstMatch(rawLine);
+      if (match == null) continue;
+      final start = int.parse(match.group(1)!);
+      final finish = int.parse(match.group(2)!);
+      if (start > finish || finish > 255) continue;
+      final name = _cleanFunction(match.group(3)!);
+      if (name.isEmpty || _looksLikePageFurniture(name)) continue;
+      ranges.add(
+        DmxRange(
+          start: start,
+          end: finish,
+          name: name,
+          safety:
+              name.toLowerCase().contains('strobe') &&
+                  !name.toLowerCase().contains('off')
+              ? 'strobe'
+              : 'normal',
+          confidence: .95,
+        ),
+      );
+    }
+    ranges.sort((left, right) => left.start.compareTo(right.start));
+    return ranges;
+  }
+  return const [];
+}
+
+List<DmxRange> _supplementalRangesFor(
+  _DetectedChannel channel,
+  Map<String, List<DmxRange>> supplemental,
+) {
+  final lower = channel.name.toLowerCase();
+  final isUndividedStrobe =
+      channel.kind == 'strobe' &&
+      channel.ranges?.length == 1 &&
+      channel.ranges!.single.start == 0 &&
+      channel.ranges!.single.end == 255;
+  final key = lower == 'shutter / strobe' || isUndividedStrobe
+      ? 'shutter'
+      : lower == 'color temperature'
+      ? 'color-temperature'
+      : lower == 'mode table 1'
+      ? 'mode-1'
+      : lower == 'mode table 2'
+      ? 'mode-2'
+      : lower == 'background color'
+      ? 'background-color'
+      : null;
+  return key == null ? const [] : supplemental[key] ?? const [];
+}
+
 class _DetectedChannel {
   const _DetectedChannel({
     required this.name,
@@ -411,6 +784,7 @@ class _DetectedChannel {
     this.fineOf,
     this.color,
     this.ranges,
+    this.confidence = .9,
   });
 
   final String name;
@@ -418,6 +792,1245 @@ class _DetectedChannel {
   final String? fineOf;
   final String? color;
   final List<DmxRange>? ranges;
+  final double confidence;
+}
+
+class _DetectedModeTable {
+  const _DetectedModeTable({
+    required this.code,
+    required this.channelCount,
+    required this.channels,
+    required this.parsedCount,
+  });
+
+  final String code;
+  final int channelCount;
+  final List<_DetectedChannel> channels;
+  final int parsedCount;
+}
+
+/// Parses manuals that define explicitly named DMX modes and then build larger
+/// modes by inheriting a smaller mode plus a repeated pixel block. This is a
+/// common layout in current professional-fixture manuals.
+List<_DetectedModeTable> _namedDmxModeTables(String text) {
+  final heading = RegExp(
+    r'^\s*([A-Za-z][A-Za-z0-9 /-]{1,48}?)\s+DMX\s+Mode\s*\n\s*(\d{1,4})\s+DMX\s+channels?\b',
+    caseSensitive: false,
+    multiLine: true,
+  );
+  final matches = heading.allMatches(text).toList();
+  if (matches.length < 2) return const [];
+
+  final modes = <_DetectedModeTable>[];
+  final byName = <String, _DetectedModeTable>{};
+  for (var index = 0; index < matches.length; index++) {
+    final match = matches[index];
+    final name = _titleCaseWords(match.group(1)!.trim());
+    final count = int.parse(match.group(2)!);
+    if (count < 1 || count > 32768) continue;
+    final end = index + 1 < matches.length
+        ? matches[index + 1].start
+        : text.length;
+    var section = text.substring(match.end, end);
+    final supplementalHeading = RegExp(
+      r'^\s*(?:Control/Settings DMX channel|FX list)\s*$',
+      caseSensitive: false,
+      multiLine: true,
+    ).firstMatch(section);
+    if (supplementalHeading != null) {
+      section = section.substring(0, supplementalHeading.start);
+    }
+    final parsed = <int, _DetectedChannel>{};
+    var inheritedCount = 0;
+
+    final inherited = RegExp(
+      r'Channels?\s+1\s*[-–—]\s*(\d{1,4})\s+as\s+in\s+(.+?)\s+Mode',
+      caseSensitive: false,
+    ).firstMatch(section);
+    if (inherited != null) {
+      inheritedCount = int.parse(inherited.group(1)!);
+      final parent = byName[_modeNameKey(inherited.group(2)!)];
+      if (parent != null) {
+        for (
+          var position = 1;
+          position <= inheritedCount && position <= parent.channels.length;
+          position++
+        ) {
+          parsed[position] = parent.channels[position - 1];
+        }
+      }
+    }
+
+    parsed.addAll(
+      _parseNamedModeRows(section, count, startAt: inheritedCount + 1),
+    );
+    _expandRepeatedRgbBlocks(section, count, parsed);
+    final mode = _DetectedModeTable(
+      code: name,
+      channelCount: count,
+      parsedCount: parsed.length,
+      channels: [
+        for (var position = 1; position <= count; position++)
+          parsed[position] ??
+              _DetectedChannel(
+                name: 'Channel $position',
+                kind: 'generic',
+                confidence: .25,
+              ),
+      ],
+    );
+    modes.add(mode);
+    byName[_modeNameKey(name)] = mode;
+  }
+  return modes;
+}
+
+Map<int, _DetectedChannel> _parseNamedModeRows(
+  String section,
+  int count, {
+  int startAt = 1,
+}) {
+  final parsed = <int, _DetectedChannel>{};
+  String? pendingFunction;
+  int? mostRecentCoarse;
+  var expectedPosition = startAt;
+  for (final rawLine in section.split(RegExp(r'[\r\n]+'))) {
+    final line = _normalizeTableLine(rawLine);
+    if (line.isEmpty ||
+        line.startsWith('=== DMXTRACT PAGE') ||
+        RegExp(
+          r'^(?:channel|dmx value|function|fade|type|default|channels? 1\b)',
+          caseSensitive: false,
+        ).hasMatch(line) ||
+        _looksLikePageFurniture(line)) {
+      continue;
+    }
+
+    final barePosition = RegExp(r'^(\d{1,4})$').firstMatch(line);
+    if (barePosition != null) {
+      final position = int.parse(barePosition.group(1)!);
+      if (position == expectedPosition && position <= count) {
+        final coarse = parsed[position - 1];
+        if (coarse != null && coarse.fineOf == null) {
+          parsed[position] = _fineChannelFor(coarse);
+          expectedPosition++;
+        }
+      }
+      continue;
+    }
+
+    final row = RegExp(r'^(\d{1,4})\s+(.+)$').firstMatch(line);
+    if (row != null) {
+      final position = int.parse(row.group(1)!);
+      if (position < 1 || position > count) continue;
+      if (parsed.containsKey(position)) continue;
+      if (position != expectedPosition) continue;
+      final rest = row.group(2)!.trim();
+      final beginsWithValue = RegExp(
+        r'^(?:\d{1,5}\s*[-–—]\s*\d{1,5}|\d{1,5})\b|^(?:…|\.\.\.)',
+      ).hasMatch(rest);
+      final isSixteenBit = RegExp(r'\b0\s*[-–—]\s*65535\b').hasMatch(rest);
+
+      final containsFineValue =
+          isSixteenBit || RegExp(r'\b(?:32768|65535)\b').hasMatch(rest);
+      if (containsFineValue &&
+          mostRecentCoarse != null &&
+          position == mostRecentCoarse + 1) {
+        final coarse = parsed[mostRecentCoarse];
+        if (coarse != null) {
+          parsed[position] = _fineChannelFor(coarse);
+          expectedPosition++;
+          pendingFunction = null;
+          continue;
+        }
+      }
+
+      var description = beginsWithValue
+          ? pendingFunction ?? _descriptionAfterDmxValue(rest)
+          : pendingFunction != null &&
+                RegExp(r'^[a-z(]', caseSensitive: true).hasMatch(rest)
+          ? '$pendingFunction $rest'
+          : rest;
+      description = _cleanNamedFunction(description);
+      if (description.isEmpty || _looksLikePageFurniture(description)) {
+        continue;
+      }
+      final definition = _classifyTableChannel(description, position);
+      final ranges = _rangesFromLine(rest, definition.name, definition.kind);
+      parsed.putIfAbsent(
+        position,
+        () => _DetectedChannel(
+          name: definition.name,
+          kind: definition.kind,
+          fineOf: definition.fineOf,
+          color: definition.color,
+          ranges: ranges,
+          confidence: definition.confidence,
+        ),
+      );
+      if (definition.fineOf == null) mostRecentCoarse = position;
+      expectedPosition++;
+      pendingFunction = null;
+      continue;
+    }
+
+    final candidate = _cleanNamedFunction(line);
+    if (pendingFunction == null && _isStandaloneChannelFunction(candidate)) {
+      pendingFunction = candidate;
+    }
+  }
+  _seedSpanningChannel(
+    section,
+    parsed,
+    count,
+    r'Virtual color wheel',
+    const _DetectedChannel(name: 'Virtual color wheel', kind: 'colorWheel'),
+  );
+  _seedWrappedP3Channel(section, parsed, count, 'Beam');
+  _seedWrappedP3Channel(section, parsed, count, 'Aura');
+  return parsed;
+}
+
+void _seedWrappedP3Channel(
+  String section,
+  Map<int, _DetectedChannel> parsed,
+  int count,
+  String area,
+) {
+  final label = RegExp(
+    '$area P3 Mix',
+    caseSensitive: false,
+  ).firstMatch(section);
+  if (label == null) return;
+  final tail = section.substring(label.end);
+  final positionMatch = RegExp(
+    r'^\s*(\d{1,4})\s+.*controlled by DMX',
+    caseSensitive: false,
+    multiLine: true,
+  ).firstMatch(tail);
+  final position = int.tryParse(positionMatch?.group(1) ?? '');
+  if (position == null || position < 1 || position > count) return;
+  parsed[position] = _DetectedChannel(name: '$area P3 mix', kind: 'mode');
+}
+
+void _seedSpanningChannel(
+  String section,
+  Map<int, _DetectedChannel> parsed,
+  int count,
+  String labelPattern,
+  _DetectedChannel definition,
+) {
+  final label = RegExp(labelPattern, caseSensitive: false).firstMatch(section);
+  if (label == null) return;
+  final tail = section.substring(label.end);
+  for (final match in RegExp(
+    r'^\s*(\d{1,4})\s+(?:\d{1,5}\s*[-–—]\s*\d{1,5}|\d{1,5})\b',
+    multiLine: true,
+  ).allMatches(tail)) {
+    final position = int.parse(match.group(1)!);
+    if (position < 1 || position > count) continue;
+    parsed[position] = definition;
+    return;
+  }
+}
+
+void _expandRepeatedRgbBlocks(
+  String section,
+  int count,
+  Map<int, _DetectedChannel> parsed,
+) {
+  final beam = RegExp(
+    r'(\d{1,3})\s*x\s*RGB\s+channels?\s*=\s*(\d{1,4})\s+channels?\s+for\s+individual\s+RGB\s+Beam\s+pixel',
+    caseSensitive: false,
+  ).firstMatch(section);
+  if (beam != null) {
+    final pixels = int.parse(beam.group(1)!);
+    final blockSize = int.parse(beam.group(2)!);
+    final start = count - blockSize + 1;
+    _addRgbTemplate(parsed, start, pixels, 'Beam pixel');
+  }
+
+  final auraPixels = RegExp(
+    r'(\d{1,4})\s+channels?\s+for\s+individual\s+RGB\s+control\s+of\s+all\s+(\d{1,4})\s+Aura\s+pixels',
+    caseSensitive: false,
+  ).firstMatch(section);
+  if (auraPixels != null) {
+    final blockSize = int.parse(auraPixels.group(1)!);
+    final pixels = int.parse(auraPixels.group(2)!);
+    _addRgbTemplate(parsed, count - blockSize + 1, pixels, 'Aura pixel');
+  }
+
+  final auraSegments = RegExp(
+    r'(\d{1,4})\s+channels?\s+for\s+Aura\s+control\s+in\s+segments',
+    caseSensitive: false,
+  ).firstMatch(section);
+  if (auraSegments != null) {
+    final blockSize = int.parse(auraSegments.group(1)!);
+    final segments = blockSize ~/ 3;
+    final start = count - blockSize + 1;
+    for (var segment = 1; segment <= segments; segment++) {
+      final label = segment <= 37
+          ? 'Aura pixels around Beam pixel $segment'
+          : segment == 38
+          ? 'Inner Aura ring'
+          : segment == 39
+          ? 'Second Aura ring'
+          : 'Aura segment $segment';
+      _addRgbTriplet(parsed, start + (segment - 1) * 3, label);
+    }
+  }
+}
+
+void _addRgbTemplate(
+  Map<int, _DetectedChannel> parsed,
+  int start,
+  int pixels,
+  String label,
+) {
+  for (var pixel = 1; pixel <= pixels; pixel++) {
+    _addRgbTriplet(parsed, start + (pixel - 1) * 3, '$label $pixel');
+  }
+}
+
+void _addRgbTriplet(
+  Map<int, _DetectedChannel> parsed,
+  int position,
+  String label,
+) {
+  const colors = [('Red', 'RED'), ('Green', 'GREEN'), ('Blue', 'BLUE')];
+  for (var index = 0; index < colors.length; index++) {
+    parsed[position + index] = _DetectedChannel(
+      name: '$label ${colors[index].$1}',
+      kind: 'colorIntensity',
+      color: colors[index].$2,
+    );
+  }
+}
+
+_DetectedChannel _fineChannelFor(_DetectedChannel coarse) => _DetectedChannel(
+  name: '${coarse.name} fine',
+  kind: coarse.kind,
+  fineOf: _relationshipKey(coarse),
+  color: coarse.color,
+  confidence: coarse.confidence,
+);
+
+String _descriptionAfterDmxValue(String value) => value
+    .replaceFirst(RegExp(r'^(?:\d{1,5}\s*[-–—]\s*\d{1,5}|\d{1,5})\s*'), '')
+    .trim();
+
+String _cleanNamedFunction(String value) => _cleanFunction(value)
+    .replaceAll('*', '')
+    .replaceAll(RegExp(r'\s+(?:Fade|Snap)\s+\d+\s*$', caseSensitive: false), '')
+    .trim();
+
+bool _isStandaloneChannelFunction(String value) {
+  if (value.length > 90 ||
+      RegExp(
+        r'aura backlight control.*all aura leds',
+        caseSensitive: false,
+      ).hasMatch(value) ||
+      RegExp(
+        r'^(?:channels?|dmx|fade|default|type|intensity\b|no function)',
+        caseSensitive: false,
+      ).hasMatch(value)) {
+    return false;
+  }
+  return RegExp(
+    r'\b(?:shutter|strobe|dimmer|red|green|blue|lime|ctc|temperature|tint|color wheel|p3 mix|fx|aura|zoom|beamshaper|pan|tilt|fixture control|pwm)\b',
+    caseSensitive: false,
+  ).hasMatch(value);
+}
+
+String _modeNameKey(String value) =>
+    value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
+
+String _titleCaseWords(String value) => value
+    .split(RegExp(r'\s+'))
+    .map((word) {
+      if (word.isEmpty) return word;
+      if (RegExp(r'^(?:PXL|RGB|DMX)$', caseSensitive: false).hasMatch(word)) {
+        return word.toUpperCase();
+      }
+      return '${word[0].toUpperCase()}${word.substring(1).toLowerCase()}';
+    })
+    .join(' ');
+
+/// Parses tables where several named personalities are printed in parallel.
+/// Channel numbers are column values, so duplicate channel counts remain
+/// distinct layouts instead of being collapsed into one generic mode.
+List<_DetectedModeTable> _contextualPersonalityTables(String text) {
+  final contexts = RegExp(
+    r'^\s*(Single Control Mode|Dual Control Mode\s*-\s*Movement|Dual Control Mode\s*-\s*Pixels)\s*$',
+    caseSensitive: false,
+    multiLine: true,
+  ).allMatches(text).toList();
+  if (contexts.length < 2) return const [];
+  final modes = <_DetectedModeTable>[];
+  for (var contextIndex = 0; contextIndex < contexts.length; contextIndex++) {
+    final contextMatch = contexts[contextIndex];
+    final contextName = _contextDisplayName(contextMatch.group(1)!);
+    final contextEnd = contextIndex + 1 < contexts.length
+        ? contexts[contextIndex + 1].start
+        : text.length;
+    final context = text.substring(contextMatch.end, contextEnd);
+    final groupHeading = RegExp(
+      r'^\s*([A-Za-z][A-Za-z0-9 ]*?\s*\(\d{1,3}CH\)(?:\s*/\s*[A-Za-z][A-Za-z0-9 ]*?\s*\(\d{1,3}CH\))*)\s*$',
+      caseSensitive: false,
+      multiLine: true,
+    );
+    final groups = groupHeading.allMatches(context).toList();
+    for (var groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+      final group = groups[groupIndex];
+      final personalities = RegExp(
+        r'([A-Za-z][A-Za-z0-9 ]*?)\s*\((\d{1,3})CH\)',
+        caseSensitive: false,
+      ).allMatches(group.group(1)!).toList();
+      if (personalities.isEmpty) continue;
+      final end = groupIndex + 1 < groups.length
+          ? groups[groupIndex + 1].start
+          : context.length;
+      final section = context.substring(group.end, end);
+      final columnOrder = _parallelPersonalityColumnOrder(
+        personalities,
+        section,
+      );
+      final parsed = <Map<int, _DetectedChannel>>[
+        for (final _ in personalities) <int, _DetectedChannel>{},
+      ];
+      _parseParallelPersonalityRows(section, [
+        for (final index in columnOrder)
+          int.parse(personalities[index].group(2)!),
+      ], parsed);
+      for (
+        var columnIndex = 0;
+        columnIndex < personalities.length;
+        columnIndex++
+      ) {
+        final modeIndex = columnOrder[columnIndex];
+        _inferFineChannelGaps(
+          parsed[columnIndex],
+          int.parse(personalities[modeIndex].group(2)!),
+        );
+      }
+      for (var modeIndex = 0; modeIndex < personalities.length; modeIndex++) {
+        final personality = personalities[modeIndex];
+        final columnIndex = columnOrder.indexOf(modeIndex);
+        final count = int.parse(personality.group(2)!);
+        final modeName =
+            '$contextName · ${_titleCaseWords(personality.group(1)!)}';
+        modes.add(
+          _DetectedModeTable(
+            code: modeName,
+            channelCount: count,
+            parsedCount: parsed[columnIndex].length,
+            channels: [
+              for (var position = 1; position <= count; position++)
+                parsed[columnIndex][position] ??
+                    _DetectedChannel(
+                      name: 'Channel $position',
+                      kind: 'generic',
+                      confidence: .25,
+                    ),
+            ],
+          ),
+        );
+      }
+    }
+  }
+  return modes;
+}
+
+List<int> _parallelPersonalityColumnOrder(
+  List<RegExpMatch> personalities,
+  String section,
+) {
+  final ordinary = List<int>.generate(personalities.length, (index) => index);
+  if (personalities.length < 2) return ordinary;
+  final headerLines = section
+      .substring(0, section.length.clamp(0, 500))
+      .split(RegExp(r'[\r\n]+'))
+      .take(10)
+      .toList();
+  final positions = <(int, double)>[];
+  for (var index = 0; index < personalities.length; index++) {
+    final center = _parallelHeaderCenter(
+      personalities[index].group(1)!,
+      headerLines,
+    );
+    if (center == null) return ordinary;
+    positions.add((index, center));
+  }
+  positions.sort((left, right) => left.$2.compareTo(right.$2));
+  for (var index = 1; index < positions.length; index++) {
+    if ((positions[index].$2 - positions[index - 1].$2).abs() < 2) {
+      return ordinary;
+    }
+  }
+  return positions.map((item) => item.$1).toList();
+}
+
+double? _parallelHeaderCenter(String name, List<String> lines) {
+  final tokens = name
+      .replaceAllMapped(
+        RegExp(r'(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])'),
+        (_) => ' ',
+      )
+      .trim()
+      .split(RegExp(r'\s+'));
+  final candidates = <List<double>>[];
+  for (final token in tokens) {
+    final centers = <double>[];
+    final pattern = RegExp(
+      '\\b${RegExp.escape(token)}\\b',
+      caseSensitive: false,
+    );
+    for (final line in lines) {
+      for (final match in pattern.allMatches(line)) {
+        centers.add(match.start + match.group(0)!.length / 2);
+      }
+    }
+    if (centers.isEmpty) return null;
+    candidates.add(centers);
+  }
+  var selected = candidates.first.first;
+  final chosen = <double>[selected];
+  for (final options in candidates.skip(1)) {
+    final average = chosen.reduce((a, b) => a + b) / chosen.length;
+    selected = options.reduce(
+      (left, right) =>
+          (left - average).abs() <= (right - average).abs() ? left : right,
+    );
+    chosen.add(selected);
+  }
+  if (chosen.reduce((a, b) => a > b ? a : b) -
+          chosen.reduce((a, b) => a < b ? a : b) >
+      8) {
+    return null;
+  }
+  return chosen.reduce((a, b) => a + b) / chosen.length;
+}
+
+void _inferFineChannelGaps(
+  Map<int, _DetectedChannel> parsed,
+  int channelCount,
+) {
+  for (var position = 2; position <= channelCount; position++) {
+    final coarse = parsed[position - 1];
+    final current = parsed[position];
+    final following = parsed[position + 1];
+    if (current != null &&
+        coarse != null &&
+        coarse.fineOf == null &&
+        const {
+          'colorIntensity',
+          'intensity',
+          'pan',
+          'tilt',
+          'zoom',
+        }.contains(coarse.kind) &&
+        (current.fineOf != null ||
+            current.name.toLowerCase().startsWith('fine ') ||
+            current.kind == 'generic' &&
+                RegExp(r'^\d{1,3}$').hasMatch(current.name))) {
+      parsed[position] = _fineChannelFor(coarse);
+      continue;
+    }
+    if (current != null) continue;
+    if (coarse == null ||
+        following == null ||
+        coarse.fineOf != null ||
+        !const {
+          'colorIntensity',
+          'intensity',
+          'pan',
+          'tilt',
+          'zoom',
+        }.contains(coarse.kind)) {
+      continue;
+    }
+    parsed[position] = _fineChannelFor(coarse);
+  }
+}
+
+void _parseParallelPersonalityRows(
+  String section,
+  List<int> counts,
+  List<Map<int, _DetectedChannel>> parsed,
+) {
+  final token = r'(?:\d{1,3}|[-–—])';
+  final prefix = RegExp(
+    '^\\s*(${List.filled(counts.length, '$token\\s+').join()})(.+?)\\s*\$',
+  );
+  for (final rawLine in section.split(RegExp(r'[\r\n]+'))) {
+    final line = rawLine.replaceAll(RegExp(r'[|]'), ' ');
+    final match = prefix.firstMatch(line);
+    if (match == null) continue;
+    final positions = RegExp(
+      token,
+    ).allMatches(match.group(1)!).map((item) => item.group(0)!).toList();
+    if (positions.length != counts.length) continue;
+    var description = match
+        .group(2)!
+        .replaceFirst(RegExp(r'\s+\d{1,3}\s*[↔⇔–—-]\s*\d{1,3}.*$'), '')
+        .replaceFirst(
+          RegExp(r'\s+\d{1,3}\s+No function.*$', caseSensitive: false),
+          '',
+        )
+        .trim();
+    description = _cleanFunction(description);
+    if (description.isEmpty ||
+        RegExp(r'^[↔⇔–—-]').hasMatch(description) ||
+        RegExp(
+          r'^(?:CH|Function|Value)',
+          caseSensitive: false,
+        ).hasMatch(description)) {
+      continue;
+    }
+    for (var modeIndex = 0; modeIndex < counts.length; modeIndex++) {
+      final position = int.tryParse(positions[modeIndex]);
+      if (position == null || position < 1 || position > counts[modeIndex]) {
+        continue;
+      }
+      if (parsed[modeIndex].containsKey(position)) continue;
+      final definition = _classifyTableChannel(description, position);
+      final ranges = _rangesFromLine(
+        match.group(2)!,
+        definition.name,
+        definition.kind,
+      );
+      parsed[modeIndex][position] = _DetectedChannel(
+        name: definition.name,
+        kind: definition.kind,
+        fineOf: definition.fineOf,
+        color: definition.color,
+        ranges: ranges,
+        confidence: definition.confidence,
+      );
+    }
+  }
+}
+
+String _contextDisplayName(String value) {
+  final lower = value.toLowerCase();
+  if (lower.contains('movement')) return 'Movement';
+  if (lower.contains('pixels')) return 'Pixels';
+  return 'Single';
+}
+
+List<_DetectedModeTable> _codedChannelTables(String text) {
+  final heading = RegExp(
+    r'^\s*([A-Z]{0,3}\s*\d{1,3}\s*[A-Z]{0,3})\s+(Channel|Ch[a-z!]{2,10})\s+(Table|[TVLI]able|Tab[a-z])\b',
+    caseSensitive: false,
+    multiLine: true,
+  );
+  final matches = heading.allMatches(text).toList();
+  if (matches.isEmpty) return const [];
+
+  final sections = <String, List<String>>{};
+  final counts = <String, int>{};
+  final exactCodes = <String>{};
+  for (var index = 0; index < matches.length; index++) {
+    final match = matches[index];
+    final code = _normalizeModeCode(match.group(1)!);
+    final digits = RegExp(r'\d{1,3}').firstMatch(code)?.group(0);
+    final count = int.tryParse(digits ?? '');
+    if (count == null || count < 1 || count > 512) continue;
+    final end = index + 1 < matches.length
+        ? matches[index + 1].start
+        : text.length;
+    sections
+        .putIfAbsent(code, () => <String>[])
+        .add(text.substring(match.end, end));
+    counts[code] = count;
+    if (match.group(2)!.toLowerCase() == 'channel' &&
+        match.group(3)!.toLowerCase() == 'table') {
+      exactCodes.add(code);
+    }
+  }
+
+  for (final numericCode
+      in sections.keys
+          .where((code) => RegExp(r'^\d+$').hasMatch(code))
+          .toList()) {
+    final count = counts[numericCode];
+    final codedMatch = sections.keys.where(
+      (code) =>
+          code != numericCode &&
+          counts[code] == count &&
+          code.replaceAll(RegExp(r'[^0-9]'), '') == numericCode,
+    );
+    if (codedMatch.length != 1) continue;
+    final preferred = codedMatch.single;
+    sections[preferred]!.addAll(sections.remove(numericCode)!);
+    counts.remove(numericCode);
+  }
+
+  // A high-resolution pass can turn the same printed heading into a nearby
+  // alias (AC37 -> AG37, BC37 -> BG37, CH58 -> C58). Collapse only aliases
+  // with the same advertised size and either a dropped character or the
+  // common C/G substitution. Equal-length ordinary codes such as 49AC and
+  // 49BC remain distinct personalities.
+  for (final alias in sections.keys.toList()) {
+    final candidates = sections.keys.where((candidate) {
+      if (candidate == alias || counts[candidate] != counts[alias]) {
+        return false;
+      }
+      if (exactCodes.contains(alias) || !exactCodes.contains(candidate)) {
+        return false;
+      }
+      final droppedCharacter = candidate.length == alias.length + 1;
+      final cToG = _isSingleGToCSubstitution(alias, candidate);
+      return droppedCharacter && _oneEditApart(alias, candidate) || cToG;
+    }).toList();
+    if (candidates.length != 1) continue;
+    final preferred = candidates.single;
+    sections[preferred]!.addAll(sections.remove(alias)!);
+    counts.remove(alias);
+  }
+
+  return [
+    for (final entry in sections.entries)
+      _parseCodedMode(entry.key, counts[entry.key]!, entry.value),
+  ];
+}
+
+bool _isSingleGToCSubstitution(String alias, String candidate) {
+  if (alias.length != candidate.length) return false;
+  final differences = <(String, String)>[
+    for (var index = 0; index < alias.length; index++)
+      if (alias[index] != candidate[index]) (alias[index], candidate[index]),
+  ];
+  return differences.length == 1 &&
+      differences.single.$1 == 'G' &&
+      differences.single.$2 == 'C';
+}
+
+bool _oneEditApart(String left, String right) {
+  if ((left.length - right.length).abs() > 1) return false;
+  final shorter = left.length <= right.length ? left : right;
+  final longer = left.length <= right.length ? right : left;
+  var shortIndex = 0;
+  var longIndex = 0;
+  var edits = 0;
+  while (shortIndex < shorter.length && longIndex < longer.length) {
+    if (shorter[shortIndex] == longer[longIndex]) {
+      shortIndex++;
+      longIndex++;
+      continue;
+    }
+    edits++;
+    if (edits > 1) return false;
+    if (shorter.length == longer.length) shortIndex++;
+    longIndex++;
+  }
+  if (longIndex < longer.length) edits++;
+  return edits == 1;
+}
+
+String _normalizeModeCode(String raw) {
+  var value = raw.replaceAll(RegExp(r'[^A-Za-z0-9]'), '').toUpperCase();
+  value = value.replaceFirst(RegExp(r'^[IL](?=\d{2,3}[A-Z]+$)'), '');
+  value = value.replaceFirst(RegExp(r'^CHH(?=\d)'), 'CH');
+  value = value.replaceFirst(RegExp(r'^4S(?=[A-Z]+$)'), '49');
+  if (RegExp(r'^A\d[A-Z]{1,3}$').hasMatch(value)) {
+    value = '4${value.substring(1)}';
+  }
+  return value;
+}
+
+_DetectedModeTable _parseCodedMode(
+  String code,
+  int channelCount,
+  List<String> sections,
+) {
+  final parsed = <int, _DetectedChannel>{};
+  final row = RegExp(
+    r'^\s*(\d{1,3})\s+(\d{1,3})\s*[-–—↔⇔ó]\s*(\d{1,3})\s+(.+?)\s*$',
+  );
+  final rowWithoutRange = RegExp(r'^\s*(\d{1,3})\s+([A-Za-z].+?)\s*$');
+  final continuation = RegExp(
+    r'^\s*(\d{1,3})\s*[-–—↔⇔ó]\s*(\d{1,3})\s+(.+?)\s*$',
+  );
+
+  for (final section in sections) {
+    int? currentChannel;
+    var nextPosition = 1;
+    for (final rawLine in section.split(RegExp(r'[\r\n]+'))) {
+      final line = _normalizeTableLine(rawLine);
+      if (line.isEmpty || line.startsWith('=== DMXTRACT PAGE')) continue;
+      if (parsed.containsKey(channelCount) &&
+          _isSupplementalTableHeading(line)) {
+        // The final coded personality is commonly followed by appendix tables
+        // whose first column is a range-row number, not a DMX channel number.
+        // Stop the channel grid here so those rows can be interpreted against
+        // the named control instead of silently overwriting later channels.
+        break;
+      }
+      final match = row.firstMatch(line);
+      if (match != null) {
+        final position = int.parse(match.group(1)!);
+        final start = _normalizeDmxValue(int.parse(match.group(2)!));
+        final end = _normalizeDmxValue(int.parse(match.group(3)!));
+        if (position < 1 ||
+            position > channelCount ||
+            start > end ||
+            end > 255) {
+          continue;
+        }
+        final description = _cleanFunction(match.group(4)!);
+        final definition = _classifyTableChannel(description, position);
+        final range = _rangeFromParts(start, end, description, definition.kind);
+        parsed[position] = _mergeDetectedChannel(
+          parsed[position],
+          definition,
+          range,
+        );
+        currentChannel = position;
+        nextPosition = position + 1;
+        continue;
+      }
+
+      final simple = rowWithoutRange.firstMatch(line);
+      if (simple != null) {
+        final position = int.parse(simple.group(1)!);
+        if (position >= 1 && position <= channelCount) {
+          final recoveredFunction = _fuzzyTableFunction(rawLine);
+          final description =
+              recoveredFunction ?? _cleanFunction(simple.group(2)!);
+          if (!_looksLikePageFurniture(description)) {
+            final definition = recoveredFunction == null
+                ? _classifyTableChannel(description, position)
+                : _withConfidence(
+                    _classifyTableChannel(description, position),
+                    .6,
+                  );
+            parsed[position] = _mergeDetectedChannel(
+              parsed[position],
+              definition,
+              recoveredFunction == null
+                  ? null
+                  : _rangeFromParts(
+                      0,
+                      255,
+                      description,
+                      definition.kind,
+                      confidence: .45,
+                    ),
+            );
+            currentChannel = position;
+            nextPosition = position + 1;
+            continue;
+          }
+        }
+      }
+
+      final extra = continuation.firstMatch(line);
+      if (extra != null && currentChannel != null) {
+        final start = _normalizeDmxValue(int.parse(extra.group(1)!));
+        final end = _normalizeDmxValue(int.parse(extra.group(2)!));
+        if (start <= end && end <= 255) {
+          final description = _cleanFunction(extra.group(3)!);
+          final currentRanges = parsed[currentChannel]?.ranges ?? const [];
+          final startsAnotherFullRow =
+              start == 0 &&
+              end == 255 &&
+              _rangesCoverFull(currentRanges) &&
+              nextPosition <= channelCount &&
+              !_looksLikePageFurniture(description);
+          if (startsAnotherFullRow) {
+            // On scanned grid tables the row-number column is often the first
+            // thing OCR loses. A second complete 0-255 range cannot belong to
+            // a channel whose range is already complete, so preserve its
+            // table order and recover it as the next row.
+            final definition = _withConfidence(
+              _classifyTableChannel(description, nextPosition),
+              .7,
+            );
+            parsed[nextPosition] = _mergeDetectedChannel(
+              parsed[nextPosition],
+              definition,
+              _rangeFromParts(
+                start,
+                end,
+                description,
+                definition.kind,
+                confidence: .65,
+              ),
+            );
+            currentChannel = nextPosition;
+            nextPosition++;
+          } else {
+            final definition = _classifyTableChannel(
+              description,
+              currentChannel,
+            );
+            parsed[currentChannel] = _mergeDetectedChannel(
+              parsed[currentChannel],
+              definition,
+              _rangeFromParts(start, end, description, definition.kind),
+            );
+          }
+        }
+        continue;
+      }
+
+      // Scanned grid tables often preserve the function column but OCR the
+      // narrow row-number and value columns as punctuation. Positioned OCR
+      // leaves a wider whitespace gap between columns, which lets us recover
+      // the row by its order without pretending the damaged value was read.
+      final fuzzy = _fuzzyTableFunction(rawLine);
+      if (fuzzy == null || nextPosition > channelCount) continue;
+      final definition = _withConfidence(
+        _classifyTableChannel(fuzzy, nextPosition),
+        .6,
+      );
+      parsed[nextPosition] = _mergeDetectedChannel(
+        parsed[nextPosition],
+        definition,
+        _rangeFromParts(0, 255, fuzzy, definition.kind, confidence: .45),
+      );
+      currentChannel = nextPosition;
+      nextPosition++;
+    }
+  }
+
+  _fillRepeatedColorSeries(parsed, channelCount);
+
+  return _DetectedModeTable(
+    code: code,
+    channelCount: channelCount,
+    parsedCount: parsed.length,
+    channels: [
+      for (var position = 1; position <= channelCount; position++)
+        parsed[position] ??
+            _DetectedChannel(
+              name: 'Channel $position',
+              kind: 'generic',
+              confidence: .25,
+            ),
+    ],
+  );
+}
+
+bool _isSupplementalTableHeading(String line) => RegExp(
+  r'^(?:colou?r[ _]+temperature|mode\s+table(?:\s*[i12①②])?|shutter|background\s+colou?r)$',
+  caseSensitive: false,
+).hasMatch(line);
+
+void _fillRepeatedColorSeries(
+  Map<int, _DetectedChannel> parsed,
+  int channelCount,
+) {
+  final groups = <String, List<({int position, int zone, String component})>>{};
+  for (final entry in parsed.entries) {
+    final part = _repeatedColorPart(entry.value.name);
+    if (part == null) continue;
+    groups.putIfAbsent(part.group, () => []).add((
+      position: entry.key,
+      zone: part.zone,
+      component: part.component,
+    ));
+  }
+
+  for (final group in groups.entries) {
+    final observations = group.value;
+    final zones = observations.map((item) => item.zone).toSet().toList()
+      ..sort();
+    if (zones.length < 2) continue;
+
+    final componentOffsets = <String, int>{};
+    final baseZone = zones.first;
+    final baseRows =
+        observations.where((item) => item.zone == baseZone).toList()
+          ..sort((left, right) => left.position.compareTo(right.position));
+    if (baseRows.length < 2) continue;
+    final basePosition = baseRows.first.position;
+    for (final row in baseRows) {
+      componentOffsets[row.component] = row.position - basePosition;
+    }
+
+    int? stride;
+    for (final component in componentOffsets.keys) {
+      final matching =
+          observations.where((item) => item.component == component).toList()
+            ..sort((left, right) => left.zone.compareTo(right.zone));
+      for (var index = 1; index < matching.length; index++) {
+        final zoneDelta = matching[index].zone - matching[index - 1].zone;
+        final positionDelta =
+            matching[index].position - matching[index - 1].position;
+        if (zoneDelta <= 0 || positionDelta % zoneDelta != 0) continue;
+        final candidate = positionDelta ~/ zoneDelta;
+        if (candidate > 0 && candidate >= componentOffsets.length) {
+          stride = candidate;
+          break;
+        }
+      }
+      if (stride != null) break;
+    }
+    if (stride == null) continue;
+
+    // Every explicit observation must agree with the inferred template. This
+    // prevents unrelated color groups elsewhere in the personality from being
+    // joined merely because their human-readable names happen to be similar.
+    final consistent = observations.every((item) {
+      final offset = componentOffsets[item.component];
+      if (offset == null) return false;
+      return item.position ==
+          basePosition + (item.zone - baseZone) * stride! + offset;
+    });
+    if (!consistent) continue;
+
+    for (var zone = zones.first; zone <= zones.last; zone++) {
+      for (final component in componentOffsets.entries) {
+        final position =
+            basePosition + (zone - baseZone) * stride + component.value;
+        if (position < 1 ||
+            position > channelCount ||
+            parsed[position] != null) {
+          continue;
+        }
+        final name = _repeatedColorName(group.key, zone, component.key);
+        const colorCodes = {
+          'red': 'RED',
+          'green': 'GREEN',
+          'blue': 'BLUE',
+          'white': 'WHITE',
+          'amber': 'AMBER',
+          'uv': 'UV',
+        };
+        final fine = group.key == 'main-fine';
+        final definition = _DetectedChannel(
+          name: name,
+          kind: 'colorIntensity',
+          color: colorCodes[component.key],
+          fineOf: fine
+              ? 'colorIntensity:${colorCodes[component.key]}:$zone'
+              : null,
+          confidence: .72,
+        );
+        parsed[position] = _mergeDetectedChannel(
+          null,
+          definition,
+          _rangeFromParts(
+            0,
+            255,
+            '$name intensity',
+            definition.kind,
+            confidence: .65,
+          ),
+        );
+      }
+    }
+  }
+}
+
+({String group, int zone, String component})? _repeatedColorPart(String name) {
+  final family = RegExp(
+    r'^(LED|Auxiliary light)\s+(\d{1,3})\s+(red|green|blue|white|amber|uv)$',
+    caseSensitive: false,
+  ).firstMatch(name);
+  if (family != null) {
+    return (
+      group: family.group(1)!.toLowerCase(),
+      zone: int.parse(family.group(2)!),
+      component: family.group(3)!.toLowerCase(),
+    );
+  }
+  final ordinary = RegExp(
+    r'^(Red|Green|Blue|White|Amber|UV)\s+(\d{1,3})(\s+fine)?$',
+    caseSensitive: false,
+  ).firstMatch(name);
+  if (ordinary == null) return null;
+  return (
+    group: ordinary.group(3) == null ? 'main' : 'main-fine',
+    zone: int.parse(ordinary.group(2)!),
+    component: ordinary.group(1)!.toLowerCase(),
+  );
+}
+
+String _repeatedColorName(String group, int zone, String component) {
+  final color = component == 'uv'
+      ? 'UV'
+      : '${component[0].toUpperCase()}${component.substring(1)}';
+  return switch (group) {
+    'led' => 'LED $zone ${component.toLowerCase()}',
+    'auxiliary light' => 'Auxiliary light $zone ${component.toLowerCase()}',
+    'main-fine' => '$color $zone fine',
+    _ => '$color $zone',
+  };
+}
+
+int _normalizeDmxValue(int value) => value >= 256 && value <= 269 ? 255 : value;
+
+String _normalizeTableLine(String value) {
+  var normalized = value
+      .replaceAll(RegExp(r'[|\[\]{}]'), ' ')
+      .replaceAll(RegExp(r'(?<=\d)[._~](?=\d)'), '-')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  normalized = normalized.replaceAllMapped(
+    RegExp(r'\b(0{1,3})(2\d{2})\b'),
+    (match) => '${match.group(1)}-${match.group(2)}',
+  );
+  return normalized;
+}
+
+_DetectedChannel _mergeDetectedChannel(
+  _DetectedChannel? existing,
+  _DetectedChannel incoming,
+  DmxRange? range,
+) {
+  final ranges = <DmxRange>[...?existing?.ranges, ?range];
+  final preferIncoming =
+      existing == null ||
+      existing.kind == 'generic' && incoming.kind != 'generic';
+  final chosen = preferIncoming ? incoming : existing;
+  return _DetectedChannel(
+    name: chosen.name,
+    kind: chosen.kind,
+    fineOf: chosen.fineOf,
+    color: chosen.color,
+    confidence: chosen.confidence,
+    ranges: ranges,
+  );
+}
+
+_DetectedChannel _withConfidence(_DetectedChannel channel, double confidence) {
+  return _DetectedChannel(
+    name: channel.name,
+    kind: channel.kind,
+    fineOf: channel.fineOf,
+    color: channel.color,
+    ranges: channel.ranges,
+    confidence: confidence,
+  );
+}
+
+DmxRange _rangeFromParts(
+  int start,
+  int end,
+  String description,
+  String kind, {
+  double confidence = .9,
+}) {
+  final lower = description.toLowerCase();
+  return DmxRange(
+    start: start,
+    end: end,
+    name: description.isEmpty ? 'Full range' : description,
+    safety:
+        kind == 'strobe' &&
+            !lower.contains('void') &&
+            !lower.contains('no function')
+        ? 'strobe'
+        : kind == 'maintenance' && lower.contains('reset')
+        ? 'reset'
+        : 'normal',
+    confidence: confidence,
+  );
+}
+
+String? _fuzzyTableFunction(String rawLine) {
+  final columns = rawLine
+      .trim()
+      .split(RegExp(r'\s{2,}'))
+      .map(_cleanFunction)
+      .toList();
+  if (columns.length < 2) return null;
+  if (columns.length == 2 && !_looksLikeFixtureFunction(columns.last)) {
+    return null;
+  }
+  final description = _cleanFunction(
+    columns
+        .sublist(columns.length >= 3 ? 2 : 1)
+        .where((column) => column.isNotEmpty)
+        .join(' '),
+  );
+  if (description.isEmpty || _looksLikePageFurniture(description)) return null;
+  if (RegExp(
+    r'^(function|value|channel|no\.?|dmx|mode\s+channel)$',
+    caseSensitive: false,
+  ).hasMatch(description)) {
+    return null;
+  }
+  return description;
+}
+
+bool _looksLikeFixtureFunction(String value) => RegExp(
+  r'\b(?:x.?axis|y.?axis|xy\s+speed|pan|tilt|reset|[rgbw]\s*\d{1,2}|ct\d*|mode|focus|focusing|shutter|dimmer|dimming|void|strobe|speed|accelerated|complementary|supplementary|assist|light\s+(?:strip|band)|color|colour|gobo|prism|control)\b',
+  caseSensitive: false,
+).hasMatch(value);
+
+String _cleanFunction(String value) {
+  var cleaned = value
+      .replaceAll(RegExp(r'''^[|:;.,\-_~“”‘’'"`§\s]+|[|:;.,\s]+$'''), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  const repairs = <String, String>{
+    r'^eset\b': 'Reset',
+    r'^ocusing\b': 'Focusing',
+    r'^hutter\b': 'Shutter',
+    r'^imming\b': 'Dimming',
+  };
+  for (final repair in repairs.entries) {
+    cleaned = cleaned.replaceFirst(
+      RegExp(repair.key, caseSensitive: false),
+      repair.value,
+    );
+  }
+  cleaned = cleaned.replaceFirstMapped(
+    RegExp(r'^ight\s+(strip|band)\b', caseSensitive: false),
+    (match) => 'Light ${match.group(1)}',
+  );
+  final numberedModeTable = RegExp(
+    r'^[mv]ode[_\s-]*table[_\s-]*[\(]?([12id])[\)]?',
+    caseSensitive: false,
+  ).firstMatch(cleaned);
+  if (numberedModeTable != null) {
+    final marker = numberedModeTable.group(1)!.toLowerCase();
+    final number = marker == '2' ? '2' : '1';
+    cleaned = cleaned.replaceRange(
+      0,
+      numberedModeTable.end,
+      'Mode table $number',
+    );
+  } else {
+    cleaned = cleaned.replaceFirst(
+      RegExp(r'^[mv]ode[_\s-]*table\w*', caseSensitive: false),
+      'Mode table',
+    );
+  }
+  return cleaned;
+}
+
+bool _looksLikePageFurniture(String value) => RegExp(
+  r'^(page|p\.?\s*\d|rev(?:ision)?|user manual|contents?)\b',
+  caseSensitive: false,
+).hasMatch(value);
+
+String _relationshipKey(_DetectedChannel channel) {
+  if (channel.kind == 'colorIntensity') {
+    final zone = RegExp(r'\d+').firstMatch(channel.name)?.group(0) ?? '';
+    return 'colorIntensity:${channel.color ?? ''}:$zone';
+  }
+  if (channel.kind == 'intensity') {
+    final zone =
+        RegExp(r'\d+(?:\s*[-–—]\s*\d+)?').firstMatch(channel.name)?.group(0) ??
+        '';
+    if (channel.name.toLowerCase().contains('background')) {
+      return 'intensity:background:$zone';
+    }
+    return zone.isEmpty ? 'intensity:dimmer' : 'intensity:dimmer:$zone';
+  }
+  if (channel.kind == 'focus') return 'focus';
+  if (const {'pan', 'tilt', 'zoom'}.contains(channel.kind)) {
+    final zone =
+        RegExp(r'\d+(?:\s*[-–—]\s*\d+)?').firstMatch(channel.name)?.group(0) ??
+        '';
+    return zone.isEmpty ? channel.kind : '${channel.kind}:$zone';
+  }
+  return channel.kind;
 }
 
 void _addColorComponents(List<_DetectedChannel> channels, String text) {
@@ -571,42 +2184,174 @@ bool _rangesCoverFull(List<DmxRange> ranges) {
 }
 
 _DetectedChannel _classifyTableChannel(String value, int channel) {
-  final withoutModeColumns = value.replaceFirst(
-    RegExp(r'^(?:(?:\d{1,3}|-)\s+){1,6}'),
-    '',
-  );
-  final lower = withoutModeColumns.toLowerCase();
-  if (RegExp(r'(pan.?tilt|x.?y).*(speed|time)').hasMatch(lower)) {
+  final withoutModeColumns = value
+      .replaceFirst(RegExp(r'^\d{1,3}\s*[-–—↔⇔ó]\s*\d{1,3}\s+'), '')
+      .replaceFirst(RegExp(r'^(?:(?:\d{1,3}|-)\s+){1,6}'), '');
+  final lower = withoutModeColumns.toLowerCase().replaceAll('_', ' ');
+  String? numberedSuffix(String label) => RegExp(
+    '\\b$label\\s+(\\d{1,3}(?:\\s*[-–—]\\s*\\d{1,3})?)',
+  ).firstMatch(lower)?.group(1);
+  if (RegExp(r'\btilt\s+(?:speed|time)\b').hasMatch(lower)) {
+    return const _DetectedChannel(name: 'Tilt speed', kind: 'speed');
+  }
+  if (RegExp(r'\btilt\s+macro\b').hasMatch(lower)) {
+    return const _DetectedChannel(name: 'Tilt macro', kind: 'effect');
+  }
+  if (RegExp(r'(pan.?tilt|x.?y|xy).*(speed|time)').hasMatch(lower)) {
     return const _DetectedChannel(name: 'Pan / tilt speed', kind: 'speed');
   }
-  if (RegExp(r'pan\s*(fine|16.?bit|least)').hasMatch(lower)) {
-    return const _DetectedChannel(name: 'Pan fine', kind: 'pan', fineOf: 'pan');
-  }
-  if (RegExp(r'tilt\s*(fine|16.?bit|least)').hasMatch(lower)) {
-    return const _DetectedChannel(
-      name: 'Tilt fine',
-      kind: 'tilt',
-      fineOf: 'tilt',
+  if (RegExp(
+    r'(?:fine\s+(?:pan|x.?axis)|(pan|x.?axis)\s*(?:fine|16.?bit|least))',
+  ).hasMatch(lower)) {
+    final zone = numberedSuffix(r'(?:fine\s+)?pan');
+    return _DetectedChannel(
+      name: zone == null ? 'Pan fine' : 'Pan $zone fine',
+      kind: 'pan',
+      fineOf: zone == null ? 'pan' : 'pan:$zone',
     );
   }
-  if (RegExp(r'\bpan\b').hasMatch(lower)) {
-    return const _DetectedChannel(name: 'Pan', kind: 'pan');
+  if (RegExp(
+    r'(?:fine\s+(?:tilt|y.?axis)|(tilt|y.?axis)\s*(?:fine|16.?bit|least))',
+  ).hasMatch(lower)) {
+    final zone = numberedSuffix(r'(?:fine\s+)?tilt');
+    return _DetectedChannel(
+      name: zone == null ? 'Tilt fine' : 'Tilt $zone fine',
+      kind: 'tilt',
+      fineOf: zone == null ? 'tilt' : 'tilt:$zone',
+    );
   }
-  if (RegExp(r'\btilt\b').hasMatch(lower)) {
-    return const _DetectedChannel(name: 'Tilt', kind: 'tilt');
+  if (RegExp(r'\bpan\b|\bx.?axis\b').hasMatch(lower)) {
+    final zone = numberedSuffix('pan');
+    return _DetectedChannel(
+      name: zone == null ? 'Pan' : 'Pan $zone',
+      kind: 'pan',
+    );
+  }
+  if (RegExp(r'\btilt\b|\by.?axis\b').hasMatch(lower)) {
+    final zone = numberedSuffix('tilt');
+    return _DetectedChannel(
+      name: zone == null ? 'Tilt' : 'Tilt $zone',
+      kind: 'tilt',
+    );
+  }
+  if (RegExp(
+    r'(?:\bfine\s+(?:dimmer|dimming|intensity)\b|\b(?:dimmer|dimming|intensity)\b.*\b(?:fine|fine.?tuning)\b|\bbackground\s+colou?r\s+fine\b)',
+  ).hasMatch(lower)) {
+    final zone = numberedSuffix(r'(?:fine\s+)?(?:dimmer|dimming|intensity)');
+    final background = lower.contains('background');
+    return _DetectedChannel(
+      name: background
+          ? 'Background color dimmer fine'
+          : zone == null
+          ? 'Dimmer fine'
+          : 'Dimmer $zone fine',
+      kind: 'intensity',
+      fineOf: background
+          ? 'intensity:background:${zone ?? ''}'
+          : zone == null
+          ? 'intensity:dimmer'
+          : 'intensity:dimmer:$zone',
+    );
   }
   if (RegExp(r'\b(dimmer|dimming|intensity)\b').hasMatch(lower)) {
-    return const _DetectedChannel(name: 'Dimmer', kind: 'intensity');
+    final zone = numberedSuffix(r'(?:dimmer|dimming|intensity)');
+    final background = lower.contains('background');
+    final aura = lower.contains('aura');
+    return _DetectedChannel(
+      name: background
+          ? 'Background color dimmer'
+          : aura
+          ? 'Aura dimmer'
+          : zone == null
+          ? 'Dimmer'
+          : 'Dimmer $zone',
+      kind: 'intensity',
+    );
+  }
+  if (RegExp(
+    r'\b(focus|focusing)\b.*\b(fine|fine.?tuning)\b',
+  ).hasMatch(lower)) {
+    return const _DetectedChannel(
+      name: 'Focus fine',
+      kind: 'focus',
+      fineOf: 'focus',
+    );
+  }
+  if (RegExp(r'\b(focus|focusing)\b').hasMatch(lower)) {
+    return const _DetectedChannel(name: 'Focus', kind: 'focus');
+  }
+  if (RegExp(r'(?:\bfine\s+zoom\b|\bzoom\b.*\bfine\b)').hasMatch(lower)) {
+    final zone = numberedSuffix(r'(?:fine\s+)?zoom');
+    return _DetectedChannel(
+      name: zone == null ? 'Zoom fine' : 'Zoom $zone fine',
+      kind: 'zoom',
+      fineOf: zone == null ? 'zoom' : 'zoom:$zone',
+    );
+  }
+  if (RegExp(r'\bzoom\b').hasMatch(lower)) {
+    final zone = RegExp(
+      r'\bzoom\s+(\d{1,3}(?:\s*[-–—]\s*\d{1,3})?)',
+    ).firstMatch(lower)?.group(1);
+    return _DetectedChannel(
+      name: zone == null ? 'Zoom' : 'Zoom $zone',
+      kind: 'zoom',
+    );
+  }
+  if (RegExp(r'\b(?:ctc|colou?r temperature)\b').hasMatch(lower)) {
+    return _DetectedChannel(
+      name: lower.contains('aura')
+          ? 'Aura color temperature'
+          : 'Color temperature',
+      kind: 'colorTemperature',
+    );
+  }
+  if (RegExp(r'green\s*/\s*magenta|green.*shift|\btint\b').hasMatch(lower)) {
+    return _DetectedChannel(
+      name: lower.contains('aura')
+          ? 'Aura green / magenta tint'
+          : 'Green / magenta tint',
+      kind: 'effect',
+    );
+  }
+  if (RegExp(r'\bbeamshaper\b').hasMatch(lower)) {
+    return const _DetectedChannel(name: 'Beamshaper', kind: 'effect');
+  }
+  if (RegExp(r'\bbackground\s+colou?r\b').hasMatch(lower)) {
+    return const _DetectedChannel(name: 'Background color', kind: 'colorWheel');
+  }
+  if (RegExp(r'fixture\s+control\s*/?\s*settings').hasMatch(lower)) {
+    return const _DetectedChannel(
+      name: 'Fixture control / settings',
+      kind: 'maintenance',
+    );
   }
   if (RegExp(r'\bmode\b').hasMatch(lower)) {
-    return const _DetectedChannel(name: 'Mode', kind: 'mode');
+    final table = RegExp(r'\bmode\s*table\s*[\(]?([12id])').firstMatch(lower);
+    final number = switch (table?.group(1)) {
+      '2' => '2',
+      // Circled 1 is frequently OCR'd as D in scanned personality tables.
+      'd' => '1',
+      '1' => '1',
+      'i' => '1',
+      _ => null,
+    };
+    return _DetectedChannel(
+      name: number == null ? 'Mode' : 'Mode table $number',
+      kind: 'mode',
+    );
   }
-  if (RegExp(r'\b(program|auto).*\bspeed\b|\bspeed\b').hasMatch(lower)) {
+  if (RegExp(
+    r'\b(program|auto).*\bspeed\b|\bspeed\b|\bvelocity\b',
+  ).hasMatch(lower)) {
     return const _DetectedChannel(name: 'Program speed', kind: 'speed');
   }
   if (RegExp(r'\b(strobe|shutter|flash)\b').hasMatch(lower)) {
-    return const _DetectedChannel(
-      name: 'Light switch / strobe',
+    return _DetectedChannel(
+      name: lower.contains('shutter')
+          ? 'Shutter / strobe'
+          : lower.contains('aura')
+          ? 'Aura strobe / shutter'
+          : 'Light switch / strobe',
       kind: 'strobe',
     );
   }
@@ -625,6 +2370,90 @@ _DetectedChannel _classifyTableChannel(String value, int channel) {
       kind: 'maintenance',
     );
   }
+  final secondaryColor = RegExp(
+    r'\b(?:fu\s+guang|supplementary\s+light|auxiliary\s+light)\s+([rgbw])\b',
+  ).firstMatch(lower);
+  if (secondaryColor != null) {
+    const colors = {
+      'r': ('Auxiliary red', 'RED'),
+      'g': ('Auxiliary green', 'GREEN'),
+      'b': ('Auxiliary blue', 'BLUE'),
+      'w': ('Auxiliary white', 'WHITE'),
+    };
+    final color = colors[secondaryColor.group(1)]!;
+    return _DetectedChannel(
+      name: color.$1,
+      kind: 'colorIntensity',
+      color: color.$2,
+    );
+  }
+  final ledIntensity = RegExp(r'^led\s*(\d{1,3})$').firstMatch(lower.trim());
+  if (ledIntensity != null) {
+    return _DetectedChannel(
+      name: 'LED ${ledIntensity.group(1)} intensity',
+      kind: 'intensity',
+    );
+  }
+  final ledColor = RegExp(
+    r'\bled\s*(\d{1,3})\s+(red|green|blue|white|amber|uv|ultraviolet)\b',
+  ).firstMatch(lower);
+  if (ledColor != null) {
+    const colors = {
+      'red': 'RED',
+      'green': 'GREEN',
+      'blue': 'BLUE',
+      'white': 'WHITE',
+      'amber': 'AMBER',
+      'uv': 'UV',
+      'ultraviolet': 'UV',
+    };
+    final component = ledColor.group(2) == 'ultraviolet'
+        ? 'uv'
+        : ledColor.group(2)!;
+    return _DetectedChannel(
+      name: 'LED ${ledColor.group(1)} $component',
+      kind: 'colorIntensity',
+      color: colors[ledColor.group(2)],
+    );
+  }
+  final auxiliaryColor = RegExp(
+    r'\bauxiliary\s+light\s+([rgbw])\s*(\d{1,3})\b',
+  ).firstMatch(lower);
+  if (auxiliaryColor != null) {
+    const colors = {
+      'r': ('red', 'RED'),
+      'g': ('green', 'GREEN'),
+      'b': ('blue', 'BLUE'),
+      'w': ('white', 'WHITE'),
+    };
+    final color = colors[auxiliaryColor.group(1)]!;
+    return _DetectedChannel(
+      name: 'Auxiliary light ${auxiliaryColor.group(2)} ${color.$1}',
+      kind: 'colorIntensity',
+      color: color.$2,
+    );
+  }
+  final abbreviatedColor = RegExp(
+    r'^(?:(fine)\s+)?([rgbw])\s*(\d{1,2})(?:\s+(fine|fine.?tuning|fine.?tuned|trimming))?\b',
+  ).firstMatch(lower);
+  if (abbreviatedColor != null) {
+    const colors = {
+      'r': ('Red', 'RED'),
+      'g': ('Green', 'GREEN'),
+      'b': ('Blue', 'BLUE'),
+      'w': ('White', 'WHITE'),
+    };
+    final color = colors[abbreviatedColor.group(2)]!;
+    final zone = abbreviatedColor.group(3)!;
+    final fine =
+        abbreviatedColor.group(1) != null || abbreviatedColor.group(4) != null;
+    return _DetectedChannel(
+      name: fine ? '${color.$1} $zone fine' : '${color.$1} $zone',
+      kind: 'colorIntensity',
+      color: color.$2,
+      fineOf: fine ? 'colorIntensity:${color.$2}:$zone' : null,
+    );
+  }
   const components = {
     'red': ('Red', 'RED'),
     'green': ('Green', 'GREEN'),
@@ -636,14 +2465,26 @@ _DetectedChannel _classifyTableChannel(String value, int channel) {
   };
   for (final entry in components.entries) {
     final colorMatch = RegExp(
-      '\\b${entry.key}\\s*(\\d{1,2})?\\b',
+      '\\b(?:(fine)\\s+)?${entry.key}\\s*(\\d{1,2})?(?:\\s+(fine|fine.?tuning))?\\b',
     ).firstMatch(lower);
     if (colorMatch != null) {
-      final zone = colorMatch.group(1);
+      final zone = colorMatch.group(2);
+      final fine = colorMatch.group(1) != null || colorMatch.group(3) != null;
       return _DetectedChannel(
-        name: zone == null ? entry.value.$1 : '${entry.value.$1} $zone',
+        name: zone == null
+            ? fine
+                  ? lower.contains('aura')
+                        ? 'Aura ${entry.value.$1.toLowerCase()} fine'
+                        : '${entry.value.$1} fine'
+                  : lower.contains('aura')
+                  ? 'Aura ${entry.value.$1.toLowerCase()}'
+                  : entry.value.$1
+            : fine
+            ? '${entry.value.$1} $zone fine'
+            : '${entry.value.$1} $zone',
         kind: 'colorIntensity',
         color: entry.value.$2,
+        fineOf: fine ? 'colorIntensity:${entry.value.$2}:${zone ?? ''}' : null,
       );
     }
   }

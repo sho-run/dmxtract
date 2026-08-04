@@ -22,7 +22,7 @@ class ReviewScreen extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         Text(
-          'We found a ${fixture.manufacturer} ${fixture.model} with ${fixture.modes.length} ${fixture.modes.length == 1 ? 'mode' : 'modes'} and ${fixture.channels.length} controls.',
+          'We found a ${fixture.manufacturer} ${fixture.model} with ${fixture.modes.length} ${fixture.modes.length == 1 ? 'mode' : 'modes'} and up to ${fixture.maxModeChannelCount} controls.',
           style: Theme.of(context).textTheme.bodyLarge,
         ),
         const SizedBox(height: 22),
@@ -30,7 +30,7 @@ class ReviewScreen extends StatelessWidget {
           manufacturer: fixture.manufacturer,
           model: fixture.model,
           modes: fixture.modes.length,
-          controls: fixture.channels.length,
+          controls: fixture.maxModeChannelCount,
         ),
         if (state.gdtfMatches.isNotEmpty) ...[
           const SizedBox(height: 18),
@@ -302,64 +302,110 @@ class _ChannelTable extends StatelessWidget {
   final FixtureProject fixture;
   final DmxtractState state;
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      const ExplanationCallout(
-        title: 'A channel is one control',
+  Widget build(BuildContext context) {
+    if (fixture.modes.isEmpty) {
+      return const ExplanationCallout(
+        title: 'No DMX mode found yet',
         body:
-            'The number is its position. “Values” are the 0–255 zones that make it do different things.',
-        icon: Icons.tune_outlined,
-      ),
-      const SizedBox(height: 14),
-      for (var index = 0; index < fixture.channels.length; index++)
-        Container(
-          padding: const EdgeInsets.symmetric(vertical: 11),
-          decoration: const BoxDecoration(
-            border: Border(bottom: BorderSide(color: DmxColors.border)),
-          ),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 66,
-                child: Text(
-                  '${index + 1}'.padLeft(3, '0'),
-                  style: const TextStyle(
-                    fontFamily: 'DSEG7',
-                    fontSize: 20,
-                    color: DmxColors.amber,
-                  ),
-                ),
-              ),
-              Expanded(
-                flex: 2,
-                child: Text(
-                  fixture.channels[index].name,
-                  style: const TextStyle(
-                    color: DmxColors.text,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              Expanded(
-                flex: 3,
-                child: Text(
-                  _ranges(fixture.channels[index]),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              ConfidenceMarker(score: fixture.channels[index].confidence),
-              const SizedBox(width: 8),
-              IconButton(
-                tooltip: 'Edit channel ${index + 1}',
-                onPressed: () => showChannelEditor(context, state, index),
-                icon: const Icon(Icons.edit_outlined),
-              ),
-            ],
-          ),
+            'Add a mode before editing channels, or choose the DMX table again on the manual page.',
+        icon: Icons.info_outline,
+      );
+    }
+    final mode =
+        fixture.modes[state.selectedMode.clamp(0, fixture.modes.length - 1)];
+    return Column(
+      children: [
+        ExplanationCallout(
+          title: '${mode.name} DMX table',
+          body:
+              'These are the ${mode.channelIds.length} controls used by the mode you selected. “Values” are the 0–255 zones that make each control do different things.',
+          icon: Icons.tune_outlined,
         ),
-    ],
-  );
+        const SizedBox(height: 14),
+        for (var position = 0; position < mode.channelIds.length; position++)
+          _ChannelRow(
+            fixture: fixture,
+            state: state,
+            channelId: mode.channelIds[position],
+            position: position,
+          ),
+      ],
+    );
+  }
+}
+
+class _ChannelRow extends StatelessWidget {
+  const _ChannelRow({
+    required this.fixture,
+    required this.state,
+    required this.channelId,
+    required this.position,
+  });
+
+  final FixtureProject fixture;
+  final DmxtractState state;
+  final String channelId;
+  final int position;
+
+  @override
+  Widget build(BuildContext context) {
+    final channelIndex = fixture.channels.indexWhere(
+      (channel) => channel.id == channelId,
+    );
+    final channel = fixture.channels[channelIndex];
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 11),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: DmxColors.border)),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 66,
+            child: Text(
+              '${position + 1}'.padLeft(3, '0'),
+              style: const TextStyle(
+                fontFamily: 'DSEG7',
+                fontSize: 20,
+                color: DmxColors.amber,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              channel.name,
+              style: const TextStyle(
+                color: DmxColors.text,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 3,
+            child: Text(
+              _ranges(channel),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          ConfidenceMarker(score: channel.confidence),
+          const SizedBox(width: 8),
+          IconButton(
+            tooltip: 'Edit channel ${position + 1}',
+            onPressed: () => showChannelEditor(
+              context,
+              state,
+              channelIndex,
+              displayNumber: position + 1,
+            ),
+            icon: const Icon(Icons.edit_outlined),
+          ),
+        ],
+      ),
+    );
+  }
+
   String _ranges(DmxChannel channel) => channel.ranges
       .map((range) => '${range.start}–${range.end} ${range.name}')
       .join(' · ');

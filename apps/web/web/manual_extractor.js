@@ -62,6 +62,51 @@ function positionedText(content) {
   }).filter(Boolean).join('\n');
 }
 
+function positionedOcr(tsv) {
+  if (!tsv) return '';
+  const words = tsv.split(/\r?\n/).slice(1).map(line => {
+    const columns = line.split('\t');
+    if (columns.length < 12 || columns[0] !== '5') return null;
+    const text = columns.slice(11).join('\t').trim();
+    if (!text) return null;
+    return {
+      text,
+      x: Number(columns[6]),
+      y: Number(columns[7]),
+      width: Number(columns[8]),
+      height: Number(columns[9]),
+    };
+  }).filter(Boolean).sort((a, b) => {
+    const aCenter = a.y + a.height / 2;
+    const bCenter = b.y + b.height / 2;
+    return Math.abs(aCenter - bCenter) > 4 ? aCenter - bCenter : a.x - b.x;
+  });
+  const rows = [];
+  for (const word of words) {
+    const center = word.y + word.height / 2;
+    const tolerance = Math.max(4, Math.min(12, word.height * 0.55));
+    let row = rows.find(candidate => Math.abs(candidate.center - center) <= tolerance);
+    if (!row) {
+      row = { center, words: [] };
+      rows.push(row);
+    }
+    row.words.push(word);
+  }
+  rows.sort((a, b) => a.center - b.center);
+  return rows.map(row => {
+    row.words.sort((a, b) => a.x - b.x);
+    let text = '';
+    let right = null;
+    for (const word of row.words) {
+      const gap = right == null ? 0 : word.x - right;
+      text += right == null ? '' : gap > Math.max(24, word.height * 2) ? '   ' : ' ';
+      text += word.text;
+      right = Math.max(right ?? word.x, word.x + word.width);
+    }
+    return text.trim();
+  }).filter(Boolean).join('\n');
+}
+
 function removeTableLines(canvas) {
   const cleaned = document.createElement('canvas');
   cleaned.width = canvas.width;
@@ -94,6 +139,30 @@ function removeTableLines(canvas) {
   return cleaned;
 }
 
+function tableTextScore(text) {
+  const normalized = text.replace(/^[\s|[\]{}()_~=—–-]+/gm, '');
+  const heading = /(?:channel\s+table|dmx\s+(?:charts?|traits|channels?))/i.test(normalized) ? 500 : 0;
+  const rows = (normalized.match(/^\s*\d{1,3}\s+(?:\d{1,3}\s*[-–—._~]\s*\d{1,3}|[A-Za-z])/gm) || []).length;
+  const ranges = (text.match(/\b\d{1,3}\s*[-–—]\s*\d{1,3}\b/g) || []).length;
+  return heading + rows * 25 + ranges * 8 + Math.min(text.length, 12000) / 100;
+}
+
+function tableRowCount(text) {
+  return (text.match(/^\s*\d{1,3}\s+(?:\d{1,3}\s*[-–—]\s*\d{1,3}|[A-Za-z])/gm) || []).length;
+}
+
+function tableRangeCount(text) {
+  return (text.match(/\b\d{1,3}\s*[-–—]\s*\d{1,3}\b/g) || []).length;
+}
+
+function looksLikeDmxTable(text) {
+  return /(channel\s+value\s+table|dmx\s+channel\s+assignments(?:\s+and\s+values)?|dmx\s+charts?|dmx\s+traits|dmx\s+channels?|channel\s+dmx\s+function|\b[A-Z]{0,3}\s*\d{1,3}\s*[A-Z]{0,3}\s+channel\s+table\b)/i.test(text);
+}
+
+function tableHeadingCount(text) {
+  return (text.match(/\b[A-Z]{0,3}\s*\d{1,3}\s*[A-Z]{0,3}\s+channel\s+table\b/gi) || []).length;
+}
+
 async function extractPdf(bytes) {
   const pdfDocument = await pdfjs.getDocument({ data: bytes, wasmUrl: './vendor/pdfjs/wasm/' }).promise;
   let worker = null;
@@ -122,10 +191,17 @@ async function extractPdf(bytes) {
   if (worker) {
     const detailedPages = new Set();
     for (const page of pages) {
-      if (/(channel value table|dmx channel assignments(?: and values)?|dmx charts?|dmx traits|dmx channels?|channel\s+dmx\s+function)/i.test(page.text)) {
-        for (let nearby = Math.max(1, page.page - 2); nearby <= Math.min(pdfDocument.numPages, page.page + 2); nearby += 1) detailedPages.add(nearby);
+      const headings = tableHeadingCount(page.text);
+      if (looksLikeDmxTable(page.text) && headings > 0 && headings <= 3) {
+        detailedPages.add(page.page);
+        if (page.page < pdfDocument.numPages) detailedPages.add(page.page + 1);
       }
+      if (tableRangeCount(page.text) >= 5) detailedPages.add(page.page);
     }
+    await worker.setParameters({
+      tessedit_pageseg_mode: window.Tesseract.PSM.SINGLE_BLOCK,
+      preserve_interword_spaces: '1',
+    });
     for (const number of detailedPages) {
       announce('Reading the DMX table carefully', number, pdfDocument.numPages);
       const page = await pdfDocument.getPage(number);
@@ -134,9 +210,21 @@ async function extractPdf(bytes) {
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
       await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-      const result = await worker.recognize(removeTableLines(canvas));
+      const result = await worker.recognize(
+        removeTableLines(canvas),
+        {},
+        { text: true, tsv: true },
+      );
       const current = pages[number - 1];
-      if ((result.data.text || '').length > current.text.length) current.text = result.data.text;
+      const detailed = positionedOcr(result.data.tsv) || result.data.text || '';
+      if (tableTextScore(detailed) >= tableTextScore(current.text) * 0.7) {
+        // Keep the broad, low-resolution pass as well. It is often better at
+        // headings while the detailed pass is better at individual table rows.
+        // Put the positioned pass first: on continuation pages a broad OCR
+        // pass can announce the next table before it emits the rows above that
+        // heading, which otherwise assigns those rows to the wrong mode.
+        current.text = `${detailed}\n${current.text}`;
+      }
     }
   }
   if (worker) await worker.terminate();
@@ -201,8 +289,9 @@ async function extractRegion(bytes, mime, pageNumber, left, top, width, height) 
 }
 
 window.dmxtract = {
-  extractManual: async (bytes, mime) => JSON.stringify(
-    mime === 'application/pdf' ? await extractPdf(bytes) : await extractImage(bytes, mime),
-  ),
+  extractManual: async (bytes, mime) => {
+    const result = mime === 'application/pdf' ? await extractPdf(bytes) : await extractImage(bytes, mime);
+    return JSON.stringify(result);
+  },
   extractManualRegion: extractRegion,
 };

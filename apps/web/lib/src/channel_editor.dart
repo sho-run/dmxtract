@@ -9,6 +9,7 @@ Future<bool> showChannelEditor(
   DmxtractState state,
   int index, {
   bool retest = false,
+  int? displayNumber,
 }) async {
   final channel = state.fixture!.channels[index];
   final name = TextEditingController(text: channel.name);
@@ -32,7 +33,7 @@ Future<bool> showChannelEditor(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setDialogState) => AlertDialog(
-        title: Text('Edit channel ${index + 1}'),
+        title: Text('Edit channel ${displayNumber ?? index + 1}'),
         content: SizedBox(
           width: 620,
           child: SingleChildScrollView(

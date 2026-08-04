@@ -54,7 +54,7 @@ class DownloadProfileScreen extends StatelessWidget {
                       ),
                     ),
                     Text(
-                      '${fixture.modes.length} ${fixture.modes.length == 1 ? 'mode' : 'modes'} · ${fixture.channels.length} channels · ${fixture.wheels.where((wheel) => wheel['kind'] == 'color').length} color wheel · ${fixture.wheels.where((wheel) => wheel['kind'] == 'gobo').length} gobo wheel',
+                      '${fixture.modes.length} ${fixture.modes.length == 1 ? 'mode' : 'modes'} · up to ${fixture.maxModeChannelCount} channels · ${fixture.wheels.where((wheel) => wheel['kind'] == 'color').length} color wheel · ${fixture.wheels.where((wheel) => wheel['kind'] == 'gobo').length} gobo wheel',
                     ),
                   ],
                 ),
