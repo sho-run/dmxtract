@@ -9,6 +9,25 @@ import 'manual_extractor.dart';
 import 'model.dart';
 import 'project_store.dart';
 
+class ManualPhoto {
+  const ManualPhoto({
+    required this.bytes,
+    required this.name,
+    required this.mime,
+  });
+
+  final Uint8List bytes;
+  final String name;
+  final String mime;
+}
+
+class _ManualPageSource {
+  const _ManualPageSource(this.bytes, this.mime, this.page);
+  final Uint8List bytes;
+  final String mime;
+  final int page;
+}
+
 class DmxtractState extends ChangeNotifier {
   DmxtractState({GdtfLookupClient? lookupClient})
     : _lookupClient = lookupClient ?? GdtfLookupClient() {
@@ -37,6 +56,7 @@ class DmxtractState extends ChangeNotifier {
   List<String> thumbnails = [];
   List<String> questions = [];
   List<GdtfProfileMatch> gdtfMatches = [];
+  final List<ManualPhoto> photos = [];
   bool gdtfLookupEnabled = false;
   final List<String> _undo = [];
   final List<String> _redo = [];
@@ -44,6 +64,7 @@ class DmxtractState extends ChangeNotifier {
   Uint8List? _manualBytes;
   String? _manualMime;
   String _manualText = '';
+  List<_ManualPageSource> _pageSources = [];
 
   FixtureMode? get mode => fixture == null || fixture!.modes.isEmpty
       ? null
@@ -74,6 +95,115 @@ class DmxtractState extends ChangeNotifier {
     await ingest(file.bytes!, file.name, _mime(file.extension));
   }
 
+  Future<void> pickPhotos() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowMultiple: true,
+      withData: true,
+    );
+    if (result == null) return;
+    addPhotos([
+      for (final file in result.files)
+        if (file.bytes != null)
+          ManualPhoto(
+            bytes: file.bytes!,
+            name: file.name,
+            mime: _mime(file.extension),
+          ),
+    ]);
+  }
+
+  void addPhotos(Iterable<ManualPhoto> additions) {
+    for (final photo in additions) {
+      final duplicate = photos.any(
+        (item) =>
+            item.name == photo.name && item.bytes.length == photo.bytes.length,
+      );
+      if (!duplicate) photos.add(photo);
+    }
+    error = null;
+    notifyListeners();
+  }
+
+  void removePhoto(int index) {
+    if (index < 0 || index >= photos.length) return;
+    photos.removeAt(index);
+    notifyListeners();
+  }
+
+  void movePhoto(int index, int delta) {
+    final target = index + delta;
+    if (index < 0 ||
+        index >= photos.length ||
+        target < 0 ||
+        target >= photos.length) {
+      return;
+    }
+    final photo = photos.removeAt(index);
+    photos.insert(target, photo);
+    notifyListeners();
+  }
+
+  void clearPhotos() {
+    photos.clear();
+    notifyListeners();
+  }
+
+  Future<void> readPhotos() async {
+    if (photos.isEmpty || busy) return;
+    busy = true;
+    error = null;
+    needsRegion = false;
+    status =
+        'Reading ${photos.length} ${photos.length == 1 ? 'photo' : 'photos'}';
+    notifyListeners();
+    try {
+      final text = <String>[];
+      final previewImages = <String>[];
+      final sources = <_ManualPageSource>[];
+      for (var index = 0; index < photos.length; index++) {
+        final photo = photos[index];
+        status = 'Reading photo ${index + 1} of ${photos.length}';
+        notifyListeners();
+        final manual = await extractManual(photo.bytes, photo.mime);
+        text.add('=== PHOTO ${index + 1}: ${photo.name} ===\n${manual.text}');
+        previewImages.addAll(manual.thumbnails);
+        for (var page = 0; page < manual.pageCount; page++) {
+          sources.add(_ManualPageSource(photo.bytes, photo.mime, page));
+        }
+      }
+      _manualText = text.join('\n\n');
+      manualName = photos.length == 1
+          ? photos.first.name
+          : '${photos.first.name} and ${photos.length - 1} more photos';
+      pageCount = sources.length;
+      thumbnails = previewImages;
+      _pageSources = sources;
+      status = 'Building your fixture';
+      notifyListeners();
+      final result = fixtureFromManualText(_manualText, manualName!);
+      fixture = result.fixture;
+      questions = result.questions;
+      needsRegion = result.fixture.channels.isEmpty;
+      status = needsRegion && result.questions.isNotEmpty
+          ? result.questions.first
+          : needsRegion
+          ? 'We could not find the table'
+          : 'Checking for mistakes';
+      if (!needsRegion) step = 1;
+      photos.clear();
+      await _save();
+      if (!needsRegion) _queueFixtureLookup();
+    } catch (exception) {
+      error =
+          'We could not read those photos. ${exception.toString().replaceFirst('Exception: ', '')}';
+      needsRegion = true;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> ingest(Uint8List bytes, String name, String mime) async {
     busy = true;
     error = null;
@@ -102,6 +232,10 @@ class DmxtractState extends ChangeNotifier {
       _manualText = manual.text;
       pageCount = manual.pageCount;
       thumbnails = manual.thumbnails;
+      _pageSources = [
+        for (var page = 0; page < manual.pageCount; page++)
+          _ManualPageSource(bytes, mime, page),
+      ];
       status = 'Building your fixture';
       notifyListeners();
       final result = fixtureFromManualText(manual.text, name);
@@ -133,8 +267,11 @@ class DmxtractState extends ChangeNotifier {
     double width,
     double height,
   ) async {
-    final bytes = _manualBytes;
-    final mime = _manualMime;
+    final source = page >= 0 && page < _pageSources.length
+        ? _pageSources[page]
+        : null;
+    final bytes = source?.bytes ?? _manualBytes;
+    final mime = source?.mime ?? _manualMime;
     if (bytes == null || mime == null || manualName == null) return;
     busy = true;
     error = null;
@@ -144,7 +281,7 @@ class DmxtractState extends ChangeNotifier {
       final regionText = await extractManualRegion(
         bytes,
         mime,
-        page,
+        source?.page ?? page,
         left,
         top,
         width,
@@ -252,6 +389,8 @@ class DmxtractState extends ChangeNotifier {
 
   Future<void> confirmPair(String requestId, String code) =>
       bridge.confirmPair(requestId, code);
+  Future<PairApprovalStatus> checkPairApproval(String requestId) =>
+      bridge.checkPairApproval(requestId);
   Future<void> beginOutput(Map<String, Object?> config) async {
     outputLabel = await bridge.begin(Uri.base.origin, config);
     outputActive = true;

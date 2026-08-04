@@ -5,11 +5,11 @@ use crate::{
 use axum::{
     Json, Router,
     extract::{
-        Path, Query, State, WebSocketUpgrade,
+        Form, Path, Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    http::{HeaderMap, StatusCode, header},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -25,6 +25,7 @@ use std::{
 use tokio::time::interval;
 
 pub struct BridgeState {
+    control_token: String,
     pairs: Mutex<HashMap<String, PendingPair>>,
     sessions: Mutex<HashMap<String, Session>>,
     lease: Mutex<Option<Lease>>,
@@ -35,6 +36,12 @@ struct PendingPair {
     origin: String,
     code: String,
     expires: Instant,
+    decision: PairDecision,
+}
+enum PairDecision {
+    Pending,
+    Approved(String),
+    Denied,
 }
 struct Session {
     origin: String,
@@ -50,6 +57,7 @@ struct Lease {
 impl BridgeState {
     pub fn new() -> Self {
         Self {
+            control_token: random_token(24),
             pairs: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             lease: Mutex::new(None),
@@ -99,11 +107,16 @@ impl BridgeState {
 
 pub fn router(state: Arc<BridgeState>) -> Router {
     Router::new()
+        .route("/", get(control_page))
         .route("/v1/health", get(health))
         .route("/v1/outputs", get(outputs))
         .route("/v1/discovery/artnet", get(discover_artnet))
         .route("/v1/pair/request", post(pair_request))
         .route("/v1/pair/confirm", post(pair_confirm))
+        .route("/v1/pair/{request_id}/status", get(pair_status))
+        .route("/v1/pair/{request_id}/approve", post(pair_approve))
+        .route("/v1/pair/{request_id}/deny", post(pair_deny))
+        .route("/v1/control/blackout", post(control_blackout))
         .route("/v1/test/begin", post(begin_test))
         .route("/v1/test/{lease_id}/channels", post(set_channels))
         .route("/v1/test/{lease_id}/heartbeat", post(heartbeat))
@@ -112,6 +125,273 @@ pub fn router(state: Arc<BridgeState>) -> Router {
         .route("/v1/test/{lease_id}/end", post(end_test))
         .route("/v1/test/{lease_id}/ws", get(websocket))
         .with_state(state)
+}
+
+async fn control_page(State(state): State<Arc<BridgeState>>) -> Response {
+    let now = Instant::now();
+    let requests = state
+        .pairs
+        .lock()
+        .expect("pair lock")
+        .iter()
+        .filter(|(_, pair)| pair.expires > now)
+        .map(|(id, pair)| {
+            let origin = html_escape(&pair.origin);
+            let id = html_escape(id);
+            let control_token = html_escape(&state.control_token);
+            match pair.decision {
+                PairDecision::Pending => format!(
+                    r#"<section class="request">
+                      <p class="eyebrow">ACCESS REQUEST</p>
+                      <h2>{origin}</h2>
+                      <p>wants to control DMX output through this bridge.</p>
+                      <div class="actions">
+                        <form method="post" action="/v1/pair/{id}/approve"><input type="hidden" name="control_token" value="{control_token}"><button class="allow" type="submit">Allow this site</button></form>
+                        <form method="post" action="/v1/pair/{id}/deny"><input type="hidden" name="control_token" value="{control_token}"><button class="deny" type="submit">Deny</button></form>
+                      </div>
+                    </section>"#
+                ),
+                PairDecision::Approved(_) => format!(
+                    r#"<section class="request approved"><h2>Approved</h2><p>{origin} can finish connecting. You can return to DMXtract.</p></section>"#
+                ),
+                PairDecision::Denied => format!(
+                    r#"<section class="request denied"><h2>Denied</h2><p>{origin} was not given access.</p></section>"#
+                ),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let (active, controller, safety_unlocked, heartbeat_age) = state
+        .lease
+        .lock()
+        .expect("lease lock")
+        .as_ref()
+        .map(|lease| {
+            let controller = state
+                .sessions
+                .lock()
+                .expect("session lock")
+                .get(&lease.token)
+                .map(|session| session.origin.clone())
+                .unwrap_or_else(|| "Unknown controller".to_owned());
+            (
+                true,
+                controller,
+                lease.safety_unlocked,
+                lease.last_seen.elapsed().as_millis(),
+            )
+        })
+        .unwrap_or((false, "No site has output control".to_owned(), false, 0));
+    let output = state
+        .output
+        .lock()
+        .expect("output lock")
+        .as_ref()
+        .map(|output| output.label())
+        .unwrap_or_else(|| "Output stopped".to_owned());
+    let (universes, nonzero_channels, active_levels) = {
+        let frames = state.frames.lock().expect("frame lock");
+        let mut summaries = Vec::new();
+        for (universe, frame) in frames.iter() {
+            let values = frame
+                .iter()
+                .enumerate()
+                .filter(|(_, value)| **value > 0)
+                .map(|(index, value)| format!("{}={value}", index + 1))
+                .collect::<Vec<_>>();
+            if !values.is_empty() {
+                let visible = values
+                    .iter()
+                    .take(16)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let more = if values.len() > 16 {
+                    format!(" · +{} more", values.len() - 16)
+                } else {
+                    String::new()
+                };
+                summaries.push(format!("Universe {universe} · CH {visible}{more}"));
+            }
+        }
+        (
+            frames.len(),
+            frames
+                .values()
+                .map(|frame| frame.iter().filter(|value| **value > 0).count())
+                .sum::<usize>(),
+            if summaries.is_empty() {
+                "All channels at zero".to_owned()
+            } else {
+                summaries.join("<br>")
+            },
+        )
+    };
+    let requests = if requests.is_empty() {
+        "<section class=\"empty\"><h2>No access request</h2><p>Return to DMXtract and choose Connect. This page will update automatically.</p></section>".to_owned()
+    } else {
+        requests
+    };
+    let status_class = if active { "active" } else { "stopped" };
+    let status_label = if active {
+        "OUTPUT ACTIVE"
+    } else {
+        "OUTPUT STOPPED"
+    };
+    let safety = if safety_unlocked {
+        "Unlocked"
+    } else {
+        "Locked"
+    };
+    let heartbeat = if active {
+        format!("{heartbeat_age} ms ago")
+    } else {
+        "Not active".to_owned()
+    };
+    let body = format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="2"><title>DMXtract Bridge controls</title><style>
+        :root{{color-scheme:dark;font-family:system-ui,sans-serif;background:#171310;color:#f4ede4}}*{{box-sizing:border-box}}body{{margin:0;padding:28px;background:linear-gradient(135deg,#171310,#241d18);min-height:100vh}}main{{max-width:760px;margin:auto}}header{{border-bottom:1px solid #70442f;padding-bottom:18px;margin-bottom:22px}}h1{{margin:0;color:#efaa38}}h2{{overflow-wrap:anywhere}}p{{color:#c9bdb2;line-height:1.5}}.status,.request,.empty{{background:#29231f;border:1px solid #70442f;border-radius:16px;padding:20px;margin:16px 0;box-shadow:0 10px 28px #0006}}.status.{status_class}{{border-color:#efaa38}}.eyebrow,.readout{{font:700 12px ui-monospace,monospace;letter-spacing:.12em;color:#efaa38}}.levels{{font:600 12px ui-monospace,monospace;color:#f0c679;line-height:1.6}}dl{{display:grid;grid-template-columns:minmax(120px,1fr) 2fr;gap:10px;margin:18px 0}}dt{{color:#9f9185}}dd{{margin:0;overflow-wrap:anywhere}}.actions{{display:flex;gap:12px;flex-wrap:wrap}}form{{margin:0}}button{{border:0;border-radius:11px;padding:12px 18px;font-weight:800;font-size:16px;cursor:pointer}}.allow{{background:#efaa38;color:#19120a}}.deny{{background:#53443a;color:#fff}}.blackout{{background:#b73532;color:#fff}}footer{{color:#8f8277;font-size:13px;margin-top:24px}}@media(max-width:560px){{body{{padding:16px}}dl{{grid-template-columns:1fr}}}}
+        </style></head><body><main><header><h1>DMXtract Bridge</h1><p>Visible controls for the DMX helper running only on this computer.</p></header>
+        <section class="status {status_class}"><p class="eyebrow">{status_label}</p><dl><dt>Controlled by</dt><dd>{controller}</dd><dt>Destination</dt><dd>{output}</dd><dt>Universes</dt><dd>{universes}</dd><dt>Non-zero channels</dt><dd>{nonzero_channels}</dd><dt>Active levels</dt><dd class="levels">{active_levels}</dd><dt>Safety ranges</dt><dd>{safety}</dd><dt>Last heartbeat</dt><dd>{heartbeat}</dd></dl>
+        <form method="post" action="/v1/control/blackout"><input type="hidden" name="control_token" value="{control_token}"><button class="blackout" type="submit">Blackout and stop output</button></form></section>
+        {requests}<footer>This page is served by the bridge at 127.0.0.1. It does not leave your computer.</footer></main></body></html>"#,
+        controller = html_escape(&controller),
+        output = html_escape(&output),
+        control_token = html_escape(&state.control_token),
+    );
+    local_html(body)
+}
+
+async fn pair_status(
+    State(state): State<Arc<BridgeState>>,
+    Path(request_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let mut pairs = state.pairs.lock().expect("pair lock");
+    let pair = pairs
+        .get(&request_id)
+        .ok_or_else(|| ApiError::bad("That pairing request is no longer available."))?;
+    require_matching_origin(&headers, &pair.origin)?;
+    if pair.expires < Instant::now() {
+        pairs.remove(&request_id);
+        return Err(ApiError::bad("That pairing request expired."));
+    }
+    match &pair.decision {
+        PairDecision::Pending => Ok(Json(json!({ "status": "pending" }))),
+        PairDecision::Denied => Ok(Json(json!({ "status": "denied" }))),
+        PairDecision::Approved(token) => {
+            let token = token.clone();
+            Ok(Json(
+                json!({ "status": "approved", "token": token, "expiresWhenBridgeExits": true }),
+            ))
+        }
+    }
+}
+
+async fn pair_approve(
+    State(state): State<Arc<BridgeState>>,
+    Path(request_id): Path<String>,
+    Form(action): Form<ControlAction>,
+) -> Result<Response, ApiError> {
+    require_control_token(&state, &action)?;
+    let mut pairs = state.pairs.lock().expect("pair lock");
+    let pair = pairs
+        .get_mut(&request_id)
+        .ok_or_else(|| ApiError::bad("That pairing request is no longer available."))?;
+    if pair.expires < Instant::now() {
+        return Err(ApiError::bad("That pairing request expired."));
+    }
+    let token = random_token(32);
+    state.sessions.lock().expect("session lock").insert(
+        token.clone(),
+        Session {
+            origin: pair.origin.clone(),
+            expires: Instant::now() + Duration::from_secs(12 * 60 * 60),
+        },
+    );
+    pair.decision = PairDecision::Approved(token);
+    Ok(local_html(message_page(
+        "Access allowed",
+        "Return to DMXtract. It will finish connecting automatically.",
+    )))
+}
+
+async fn pair_deny(
+    State(state): State<Arc<BridgeState>>,
+    Path(request_id): Path<String>,
+    Form(action): Form<ControlAction>,
+) -> Result<Response, ApiError> {
+    require_control_token(&state, &action)?;
+    let mut pairs = state.pairs.lock().expect("pair lock");
+    let pair = pairs
+        .get_mut(&request_id)
+        .ok_or_else(|| ApiError::bad("That pairing request is no longer available."))?;
+    pair.decision = PairDecision::Denied;
+    Ok(local_html(message_page(
+        "Access denied",
+        "No DMX control was granted. You can close this tab.",
+    )))
+}
+
+async fn control_blackout(
+    State(state): State<Arc<BridgeState>>,
+    Form(action): Form<ControlAction>,
+) -> Result<Response, ApiError> {
+    require_control_token(&state, &action)?;
+    state.blackout(true);
+    *state.lease.lock().expect("lease lock") = None;
+    *state.output.lock().expect("output lock") = None;
+    Ok(local_html(message_page(
+        "Output stopped",
+        "Every tracked universe was sent a zero frame. You can close this tab.",
+    )))
+}
+
+#[derive(Deserialize)]
+struct ControlAction {
+    control_token: String,
+}
+
+fn require_control_token(state: &BridgeState, action: &ControlAction) -> Result<(), ApiError> {
+    if action.control_token != state.control_token {
+        return Err(ApiError::unauthorized(
+            "Open Bridge controls on this computer before approving or stopping output.",
+        ));
+    }
+    Ok(())
+}
+
+fn local_html(body: String) -> Response {
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        Html(body),
+    )
+        .into_response()
+}
+
+fn message_page(title: &str, message: &str) -> String {
+    format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><style>:root{{color-scheme:dark;font-family:system-ui,sans-serif;background:#171310;color:#f4ede4}}body{{display:grid;place-items:center;min-height:100vh;margin:0;padding:20px}}main{{max-width:560px;background:#29231f;border:1px solid #efaa38;border-radius:16px;padding:28px}}h1{{color:#efaa38}}p{{color:#c9bdb2;line-height:1.5}}</style></head><body><main><h1>{title}</h1><p>{message}</p></main></body></html>"#,
+        title = html_escape(title),
+        message = html_escape(message),
+    )
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 async fn health() -> Json<Value> {
@@ -159,6 +439,7 @@ async fn pair_request(
             origin: request.origin.clone(),
             code: code.clone(),
             expires: Instant::now() + Duration::from_secs(120),
+            decision: PairDecision::Pending,
         },
     );
     // The pairing code must be visible for terminal builds. Do not print the
@@ -166,7 +447,7 @@ async fn pair_request(
     eprintln!("DMXTRACT_PAIRING\t{}", code);
     tracing::warn!("pairing requested; confirm the code shown in the bridge");
     Ok(Json(
-        json!({ "requestId": request_id, "expiresInSeconds": 120, "message": "Check the DMXtract Bridge tray or terminal for a six-digit code." }),
+        json!({ "requestId": request_id, "expiresInSeconds": 120, "controlsUrl": "http://127.0.0.1:46321/", "message": "Approve the requesting site in the visible Bridge controls." }),
     ))
 }
 
@@ -180,17 +461,16 @@ async fn pair_confirm(
     State(state): State<Arc<BridgeState>>,
     Json(request): Json<PairConfirm>,
 ) -> Result<Json<Value>, ApiError> {
-    let pending = state
-        .pairs
-        .lock()
-        .unwrap()
-        .remove(&request.request_id)
+    let mut pairs = state.pairs.lock().unwrap();
+    let pending = pairs
+        .get(&request.request_id)
         .ok_or_else(|| ApiError::bad("That pairing request is no longer available."))?;
     if pending.expires < Instant::now() || pending.code != request.code {
         return Err(ApiError::unauthorized(
             "The pairing code is incorrect or expired.",
         ));
     }
+    let pending = pairs.remove(&request.request_id).expect("checked pair");
     let token = random_token(32);
     state.sessions.lock().unwrap().insert(
         token.clone(),
@@ -496,6 +776,7 @@ fn random_token(length: usize) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
+#[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     message: String,
@@ -535,6 +816,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
     use axum::http::HeaderValue;
 
     #[test]
@@ -543,5 +825,86 @@ mod tests {
         headers.insert("origin", HeaderValue::from_static("https://evil.example"));
         assert!(require_matching_origin(&headers, "https://dmxtract.sho.run").is_err());
         assert!(require_matching_origin(&headers, "https://evil.example").is_ok());
+    }
+
+    #[tokio::test]
+    async fn local_control_page_escapes_requesting_origin() {
+        let state = Arc::new(BridgeState::new());
+        state.pairs.lock().unwrap().insert(
+            "request".to_owned(),
+            PendingPair {
+                origin: "https://example.test/<script>".to_owned(),
+                code: "123456".to_owned(),
+                expires: Instant::now() + Duration::from_secs(120),
+                decision: PairDecision::Pending,
+            },
+        );
+
+        let response = control_page(State(state)).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("https://example.test/&lt;script&gt;"));
+        assert!(!html.contains("https://example.test/<script>"));
+    }
+
+    #[tokio::test]
+    async fn approval_requires_the_secret_from_the_local_control_page() {
+        let state = Arc::new(BridgeState::new());
+        state.pairs.lock().unwrap().insert(
+            "request".to_owned(),
+            PendingPair {
+                origin: "https://dmxtract.sho.run".to_owned(),
+                code: "123456".to_owned(),
+                expires: Instant::now() + Duration::from_secs(120),
+                decision: PairDecision::Pending,
+            },
+        );
+
+        let denied = pair_approve(
+            State(state.clone()),
+            Path("request".to_owned()),
+            Form(ControlAction {
+                control_token: "known-to-the-requesting-site".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(denied.unwrap_err().status, StatusCode::UNAUTHORIZED);
+        assert!(state.sessions.lock().unwrap().is_empty());
+
+        pair_approve(
+            State(state.clone()),
+            Path("request".to_owned()),
+            Form(ControlAction {
+                control_token: state.control_token.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(state.sessions.lock().unwrap().len(), 1);
+
+        let mut wrong_origin = HeaderMap::new();
+        wrong_origin.insert("origin", HeaderValue::from_static("https://evil.example"));
+        let denied = pair_status(
+            State(state.clone()),
+            Path("request".to_owned()),
+            wrong_origin,
+        )
+        .await;
+        assert_eq!(denied.unwrap_err().status, StatusCode::UNAUTHORIZED);
+
+        let mut matching_origin = HeaderMap::new();
+        matching_origin.insert(
+            "origin",
+            HeaderValue::from_static("https://dmxtract.sho.run"),
+        );
+        let Json(approved) = pair_status(State(state), Path("request".to_owned()), matching_origin)
+            .await
+            .unwrap();
+        assert_eq!(approved["status"], "approved");
+        assert!(
+            approved["token"]
+                .as_str()
+                .is_some_and(|token| !token.is_empty())
+        );
     }
 }

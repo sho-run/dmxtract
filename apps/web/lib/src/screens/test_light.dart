@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:web/web.dart' as web;
 import '../app_state.dart';
 import '../bridge_client.dart';
 import '../channel_editor.dart';
@@ -102,6 +105,18 @@ class TestLightScreen extends StatelessWidget {
                             active: state.outputActive,
                             label: state.outputLabel,
                           ),
+                          if (state.bridgeAvailable) ...[
+                            const SizedBox(height: 4),
+                            TextButton.icon(
+                              style: TextButton.styleFrom(
+                                padding: EdgeInsets.zero,
+                                visualDensity: VisualDensity.compact,
+                              ),
+                              onPressed: () => _openBridgeControls(state),
+                              icon: const Icon(Icons.open_in_new, size: 16),
+                              label: const Text('View bridge controls'),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -135,6 +150,16 @@ class TestLightScreen extends StatelessWidget {
                       body:
                           'Open DMXtract Bridge on this computer, then choose Find bridge. Chrome or Edge may ask to allow local network access; this only reaches the helper on this computer.',
                       icon: Icons.download_outlined,
+                    ),
+                  ),
+                if (state.bridgeAvailable && !state.outputActive)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 14),
+                    child: ExplanationCallout(
+                      title: 'Bridge found on this Mac',
+                      body:
+                          'The bridge runs only on this computer. Its controls show which site is requesting access and whether DMX output is active.',
+                      icon: Icons.visibility_outlined,
                     ),
                   ),
                 if (state.outputActive)
@@ -510,48 +535,16 @@ class TestLightScreen extends StatelessWidget {
   ) async {
     try {
       if (state.bridge.token == null) {
+        _openBridgeControls(state);
         final requestId = await state.requestPair();
         if (!context.mounted) return;
-        final controller = TextEditingController();
-        final code = await showDialog<String>(
+        final approved = await showDialog<bool>(
           context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Approve this browser'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'The DMXtract Bridge tray or terminal shows a six-digit code. Enter it here.',
-                ),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: controller,
-                  autofocus: true,
-                  maxLength: 6,
-                  keyboardType: TextInputType.number,
-                  style: const TextStyle(
-                    fontFamily: 'DSEG7',
-                    fontSize: 28,
-                    color: DmxColors.amber,
-                  ),
-                  decoration: const InputDecoration(labelText: 'Pairing code'),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, controller.text),
-                child: const Text('Approve'),
-              ),
-            ],
-          ),
+          barrierDismissible: false,
+          builder: (context) =>
+              _BridgeApprovalDialog(state: state, requestId: requestId),
         );
-        if (code == null) return;
-        await state.confirmPair(requestId, code);
+        if (approved != true) return;
       }
       if (!context.mounted) return;
       List<ArtNetNode> nodes = const [];
@@ -570,6 +563,14 @@ class TestLightScreen extends StatelessWidget {
         );
       }
     }
+  }
+
+  static void _openBridgeControls(DmxtractState state) {
+    web.window.open(
+      state.bridge.controlsUrl,
+      'dmxtract-bridge-controls',
+      'noopener,noreferrer',
+    );
   }
 
   static Future<Map<String, Object?>?> _outputDialog(
@@ -699,6 +700,94 @@ class TestLightScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+class _BridgeApprovalDialog extends StatefulWidget {
+  const _BridgeApprovalDialog({required this.state, required this.requestId});
+  final DmxtractState state;
+  final String requestId;
+
+  @override
+  State<_BridgeApprovalDialog> createState() => _BridgeApprovalDialogState();
+}
+
+class _BridgeApprovalDialogState extends State<_BridgeApprovalDialog> {
+  Timer? _poller;
+  bool _checking = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _poller = Timer.periodic(
+      const Duration(milliseconds: 600),
+      (_) => _checkApproval(),
+    );
+    unawaited(_checkApproval());
+  }
+
+  Future<void> _checkApproval() async {
+    if (_checking || !mounted) return;
+    _checking = true;
+    try {
+      final status = await widget.state.checkPairApproval(widget.requestId);
+      if (!mounted) return;
+      if (status == PairApprovalStatus.approved) {
+        Navigator.pop(context, true);
+      } else if (status == PairApprovalStatus.denied) {
+        _poller?.cancel();
+        setState(() => _error = 'Access was denied in the Bridge controls.');
+      }
+    } catch (exception) {
+      if (mounted) {
+        setState(
+          () => _error = exception.toString().replaceFirst('Exception: ', ''),
+        );
+      }
+    } finally {
+      _checking = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _poller?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Approve in Bridge controls'),
+    content: SizedBox(
+      width: 470,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'A local Bridge controls page opened. Check the requesting site, then choose Allow this site. DMXtract will continue automatically.',
+          ),
+          const SizedBox(height: 16),
+          const LinearProgressIndicator(),
+          if (_error != null) ...[
+            const SizedBox(height: 14),
+            Text(_error!, style: const TextStyle(color: DmxColors.red)),
+          ],
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context, false),
+        child: const Text('Cancel'),
+      ),
+      FilledButton.icon(
+        onPressed: () => TestLightScreen._openBridgeControls(widget.state),
+        icon: const Icon(Icons.open_in_new),
+        label: const Text('Open bridge controls'),
+      ),
+    ],
+  );
 }
 
 class _Check extends StatelessWidget {

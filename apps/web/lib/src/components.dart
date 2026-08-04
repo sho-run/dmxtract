@@ -2,6 +2,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 import 'app_state.dart';
+import 'deployment_theme.dart';
 import 'theme.dart';
 
 class DmxScope extends InheritedNotifier<DmxtractState> {
@@ -34,6 +35,23 @@ class _BeginnerPageShellState extends State<BeginnerPageShell> {
     _setManualHovering(false);
     if (state.busy || state.step != 0 || details.files.isEmpty) return;
 
+    final droppedPhotos = <ManualPhoto>[];
+    for (final file in details.files) {
+      final mime = file.mimeType ?? _manualMime(file.name);
+      if (!mime.startsWith('image/')) continue;
+      droppedPhotos.add(
+        ManualPhoto(
+          bytes: await file.readAsBytes(),
+          name: file.name,
+          mime: mime,
+        ),
+      );
+    }
+    if (droppedPhotos.length > 1 || state.photos.isNotEmpty) {
+      state.addPhotos(droppedPhotos);
+      return;
+    }
+
     final file = details.files.first;
     final bytes = await file.readAsBytes();
     if (!mounted) return;
@@ -54,6 +72,7 @@ class _BeginnerPageShellState extends State<BeginnerPageShell> {
       });
     }
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
+    final compact = MediaQuery.sizeOf(context).width < 600;
     final animationDuration = reduceMotion
         ? Duration.zero
         : const Duration(milliseconds: 180);
@@ -67,9 +86,10 @@ class _BeginnerPageShellState extends State<BeginnerPageShell> {
         fit: StackFit.expand,
         children: [
           DecoratedBox(
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               color: DmxColors.canvas,
-              gradient: LinearGradient(
+              image: DeploymentTheme.background,
+              gradient: const LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: [
@@ -80,33 +100,41 @@ class _BeginnerPageShellState extends State<BeginnerPageShell> {
                 stops: [0, .48, 1],
               ),
             ),
-            child: Scaffold(
-              body: SafeArea(
-                child: SelectionArea(
-                  child: Column(
-                    children: [
-                      _Header(state: state),
-                      Expanded(
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.fromLTRB(24, 18, 24, 48),
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 1080),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                StepIndicator(
-                                  step: state.step,
-                                  onSelected: state.goTo,
-                                ),
-                                const SizedBox(height: 32),
-                                widget.child,
-                              ],
+            child: ColoredBox(
+              color: compact ? const Color(0x660d0806) : Colors.transparent,
+              child: Scaffold(
+                body: SafeArea(
+                  child: SelectionArea(
+                    child: Column(
+                      children: [
+                        _Header(state: state, compact: compact),
+                        Expanded(
+                          child: SingleChildScrollView(
+                            padding: EdgeInsets.fromLTRB(
+                              compact ? 16 : 24,
+                              compact ? 10 : 18,
+                              compact ? 16 : 24,
+                              compact ? 28 : 48,
+                            ),
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 1080),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  StepIndicator(
+                                    step: state.step,
+                                    onSelected: state.goTo,
+                                  ),
+                                  SizedBox(height: compact ? 20 : 32),
+                                  widget.child,
+                                ],
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      const _Footer(),
-                    ],
+                        _Footer(compact: compact),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -182,20 +210,7 @@ class _ManualDropReadyOverlay extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                width: 72,
-                height: 72,
-                decoration: BoxDecoration(
-                  color: DmxColors.amber.withValues(alpha: .13),
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: DmxColors.bezel),
-                ),
-                child: const Icon(
-                  Icons.file_download_outlined,
-                  size: 40,
-                  color: DmxColors.amber,
-                ),
-              ),
+              const DeploymentManualDropMark(large: true),
               const SizedBox(height: 20),
               Text(
                 'Drop to read this manual',
@@ -209,7 +224,7 @@ class _ManualDropReadyOverlay extends StatelessWidget {
                 style: TextStyle(fontSize: 17, color: DmxColors.muted),
               ),
               const SizedBox(height: 20),
-              const PrivacyPill(),
+              const PrivacyPill(compact: true),
             ],
           ),
         ),
@@ -219,15 +234,19 @@ class _ManualDropReadyOverlay extends StatelessWidget {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.state});
+  const _Header({required this.state, required this.compact});
   final DmxtractState state;
+  final bool compact;
   @override
   Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
-    decoration: const BoxDecoration(
-      color: Color(0xf2252321),
-      border: Border(bottom: BorderSide(color: DmxColors.rust, width: 1.5)),
-      boxShadow: [
+    decoration: BoxDecoration(
+      color: DeploymentTheme.enabled
+          ? Colors.transparent
+          : const Color(0xf2252321),
+      border: const Border(
+        bottom: BorderSide(color: DmxColors.rust, width: 1.5),
+      ),
+      boxShadow: const [
         BoxShadow(
           color: Color(0xaa000000),
           blurRadius: 16,
@@ -235,49 +254,61 @@ class _Header extends StatelessWidget {
         ),
       ],
     ),
-    child: Row(
-      children: [
-        InkWell(
-          onTap: () => state.goTo(0),
-          borderRadius: BorderRadius.circular(8),
-          child: const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-            child: Text.rich(
-              TextSpan(
-                children: [
-                  TextSpan(
-                    text: 'DMX',
-                    style: TextStyle(color: DmxColors.amber),
+    child: DeploymentIronSurface(
+      borderRadius: BorderRadius.zero,
+      child: Padding(
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? 14 : 28,
+          vertical: compact ? 10 : 18,
+        ),
+        child: Row(
+          children: [
+            InkWell(
+              onTap: () => state.goTo(0),
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                child: Text.rich(
+                  const TextSpan(
+                    children: [
+                      TextSpan(
+                        text: 'DMX',
+                        style: TextStyle(color: DmxColors.amber),
+                      ),
+                      TextSpan(text: 'tract'),
+                    ],
                   ),
-                  TextSpan(text: 'tract'),
-                ],
-              ),
-              style: TextStyle(
-                fontSize: 25,
-                fontWeight: FontWeight.w800,
-                color: DmxColors.text,
+                  style: TextStyle(
+                    fontSize: compact ? 22 : 25,
+                    fontWeight: FontWeight.w800,
+                    color: DmxColors.text,
+                  ),
+                ),
               ),
             ),
-          ),
+            if (!compact) ...[
+              const SizedBox(width: 18),
+              const Expanded(
+                child: Text(
+                  'Build a fixture profile from the manual you already have.',
+                  style: TextStyle(color: DmxColors.muted),
+                ),
+              ),
+            ] else
+              const Spacer(),
+            IconButton(
+              onPressed: state.canUndo ? state.undo : null,
+              tooltip: 'Undo last edit',
+              icon: const Icon(Icons.undo_outlined),
+            ),
+            IconButton(
+              onPressed: state.canRedo ? state.redo : null,
+              tooltip: 'Redo edit',
+              icon: const Icon(Icons.redo_outlined),
+            ),
+          ],
         ),
-        const SizedBox(width: 18),
-        const Expanded(
-          child: Text(
-            'Build a fixture profile from the manual you already have.',
-            style: TextStyle(color: DmxColors.muted),
-          ),
-        ),
-        IconButton(
-          onPressed: state.canUndo ? state.undo : null,
-          tooltip: 'Undo last edit',
-          icon: const Icon(Icons.undo_outlined),
-        ),
-        IconButton(
-          onPressed: state.canRedo ? state.redo : null,
-          tooltip: 'Redo edit',
-          icon: const Icon(Icons.redo_outlined),
-        ),
-      ],
+      ),
     ),
   );
 }
@@ -295,6 +326,38 @@ class StepIndicator extends StatelessWidget {
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final compact = constraints.maxWidth < 660;
+      if (compact) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Text(
+                  'Step ${step + 1} of ${labels.length}',
+                  style: const TextStyle(
+                    fontFamily: 'JetBrains Mono',
+                    fontSize: 12,
+                    color: DmxColors.amber,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  labels[step],
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(99),
+              child: LinearProgressIndicator(
+                value: (step + 1) / labels.length,
+                minHeight: 5,
+              ),
+            ),
+          ],
+        );
+      }
       return Row(
         children: [
           for (var index = 0; index < labels.length; index++) ...[
@@ -393,26 +456,34 @@ class _StepDot extends StatelessWidget {
 }
 
 class PrivacyPill extends StatelessWidget {
-  const PrivacyPill({super.key});
+  const PrivacyPill({super.key, this.compact = false});
+  final bool compact;
   @override
-  Widget build(BuildContext context) => const DecoratedBox(
-    decoration: BoxDecoration(
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: const BoxDecoration(
       color: Color(0x261fd4c4),
       borderRadius: BorderRadius.all(Radius.circular(99)),
       border: Border.fromBorderSide(BorderSide(color: Color(0x661fd4c4))),
     ),
     child: Padding(
-      padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 10 : 12,
+        vertical: compact ? 6 : 7,
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.lock_outline, color: DmxColors.teal, size: 17),
-          SizedBox(width: 7),
-          Text(
-            'Stays on this device',
-            style: TextStyle(
-              color: DmxColors.teal,
-              fontWeight: FontWeight.w800,
+          const Icon(Icons.lock_outline, color: DmxColors.teal, size: 17),
+          const SizedBox(width: 7),
+          Flexible(
+            child: Text(
+              compact ? 'Private on this phone' : 'Stays on this device',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: DmxColors.teal,
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ),
         ],
@@ -636,7 +707,7 @@ class BridgeConnectionStatus extends StatelessWidget {
           active
               ? label
               : available
-              ? 'Bridge ready'
+              ? 'Bridge found on this Mac'
               : 'Bridge not running',
           style: TextStyle(color: color, fontWeight: FontWeight.w800),
         ),
@@ -664,10 +735,14 @@ class AdvancedDisclosurePanel extends StatelessWidget {
 }
 
 class _Footer extends StatelessWidget {
-  const _Footer();
+  const _Footer({required this.compact});
+  final bool compact;
   @override
   Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+    padding: EdgeInsets.symmetric(
+      horizontal: compact ? 10 : 28,
+      vertical: compact ? 6 : 16,
+    ),
     decoration: const BoxDecoration(
       color: Color(0xf2252321),
       border: Border(top: BorderSide(color: DmxColors.rustDark, width: 1.5)),
@@ -675,25 +750,39 @@ class _Footer extends StatelessWidget {
     child: Wrap(
       alignment: WrapAlignment.center,
       crossAxisAlignment: WrapCrossAlignment.center,
-      spacing: 18,
-      runSpacing: 8,
+      spacing: compact ? 8 : 18,
+      runSpacing: compact ? 0 : 8,
       children: [
-        const _FooterLink(
+        _FooterLink(
           label: 'GitHub',
           url: 'https://github.com/sho-run/dmxtract',
+          compact: compact,
         ),
-        const _FooterLink(label: 'Privacy', url: '/privacy/'),
-        const Text('Open source by', style: TextStyle(color: DmxColors.muted)),
-        const _FooterLink(label: 'sho.run', url: 'https://sho.run/'),
+        _FooterLink(label: 'Privacy', url: '/privacy/', compact: compact),
+        if (!compact)
+          const Text(
+            'Open source by',
+            style: TextStyle(color: DmxColors.muted),
+          ),
+        _FooterLink(
+          label: compact ? 'By sho.run' : 'sho.run',
+          url: 'https://sho.run/',
+          compact: compact,
+        ),
       ],
     ),
   );
 }
 
 class _FooterLink extends StatelessWidget {
-  const _FooterLink({required this.label, required this.url});
+  const _FooterLink({
+    required this.label,
+    required this.url,
+    required this.compact,
+  });
   final String label;
   final String url;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) => Semantics(
@@ -703,7 +792,7 @@ class _FooterLink extends StatelessWidget {
       onPressed: () => web.window.open(url, '_blank', 'noopener,noreferrer'),
       style: TextButton.styleFrom(
         foregroundColor: DmxColors.muted,
-        minimumSize: const Size(44, 44),
+        minimumSize: Size(44, compact ? 36 : 44),
         padding: const EdgeInsets.symmetric(horizontal: 5),
       ),
       child: ExcludeSemantics(
