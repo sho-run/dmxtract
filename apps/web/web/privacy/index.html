@@ -21,6 +21,12 @@
       font-weight: 800;
       font-display: swap;
     }
+    @font-face {
+      font-family: Comfortaa;
+      src: url('/assets/assets/fonts/Comfortaa-Bold.ttf') format('truetype');
+      font-weight: 700;
+      font-display: swap;
+    }
     :root {
       color-scheme: dark;
       --amber: #e6a33a;
@@ -67,8 +73,9 @@
     strong { color: var(--text); }
     a { color: var(--amber); text-underline-offset: 3px; }
     a:hover, a:focus-visible { color: var(--gold); }
-    .brand { color: var(--text); font-size: 24px; font-weight: 800; text-decoration: none; }
-    .brand span { color: var(--amber); }
+    .brand { font: 700 24px/1 Comfortaa, Nunito, sans-serif; letter-spacing: .01em; text-decoration: none; }
+    .brand .dmx { color: var(--teal); }
+    .brand .tract { color: var(--amber); }
     .card {
       margin-top: 30px;
       padding: 26px;
@@ -98,8 +105,8 @@
 <body>
   <header>
     <nav aria-label="Primary navigation">
-      <a class="brand" href="/"><span>DMX</span>tract</a>
-      <a href="/">Back to the fixture builder</a>
+      <a class="brand" href="/" aria-label="dmxtract"><span class="dmx">dmx</span><span class="tract">tract</span></a>
+      <div><a href="/about/">About</a> · <a href="/">Fixture builder</a></div>
     </nav>
   </header>
   <main>

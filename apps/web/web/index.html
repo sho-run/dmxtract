@@ -30,6 +30,30 @@
   <meta name="twitter:title" content="DMXtract — Fixture profiles from manuals">
   <meta name="twitter:description" content="Turn a DMX fixture manual into an editable OFL or GDTF profile. Your manual never leaves this device.">
   <meta name="twitter:image" content="https://dmxtract.sho.run/icons/Icon-512.png">
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "DMXtract",
+      "url": "https://dmxtract.sho.run/",
+      "description": "Turn a DMX fixture manual into an editable OFL or GDTF profile without uploading it.",
+      "applicationCategory": "UtilitiesApplication",
+      "operatingSystem": "Any operating system with a modern web browser",
+      "isAccessibleForFree": true,
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "license": "https://github.com/sho-run/dmxtract/blob/main/LICENSE",
+      "author": {
+        "@type": "Organization",
+        "name": "sho.run",
+        "url": "https://sho.run/"
+      },
+      "sameAs": "https://github.com/sho-run/dmxtract"
+    }
+  </script>
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -47,6 +71,13 @@
   <script type="module" src="core_wasm.js"></script>
 </head>
 <body>
+  <noscript>
+    <main>
+      <h1>DMXtract</h1>
+      <p>Turn a DMX lighting-fixture manual into an editable OFL or GDTF profile without uploading it.</p>
+      <p><a href="/about/">Learn why portable fixture profiles matter</a> or <a href="/privacy/">read the privacy promise</a>.</p>
+    </main>
+  </noscript>
   <!--
     You can customize the "flutter_bootstrap.js" script.
     This is useful to provide a custom configuration to the Flutter loader

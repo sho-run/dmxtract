@@ -8,7 +8,11 @@ const failures = [];
 
 const requiredFiles = [
   "index.html",
+  "about/index.html",
   "privacy/index.html",
+  "llms.txt",
+  "robots.txt",
+  "sitemap.xml",
   "_headers",
   "_redirects",
   "flutter_bootstrap.js",

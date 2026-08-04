@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#151310">
+  <meta name="description" content="Why DMXtract turns lighting-fixture manuals into portable OFL and GDTF profiles—and where those formats work.">
+  <link rel="canonical" href="https://dmxtract.sho.run/about/">
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <meta property="og:url" content="https://dmxtract.sho.run/about/">
+  <meta property="og:title" content="About DMXtract — Your lights should not choose your software">
+  <meta property="og:description" content="Understand OFL and GDTF, where they work, and why portable fixture profiles matter.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="https://dmxtract.sho.run/icons/Icon-512.png">
+  <meta name="twitter:card" content="summary">
+  <title>About DMXtract — Your lights should not choose your software</title>
+  <style>
+    @font-face {
+      font-family: Nunito;
+      src: url('/assets/assets/fonts/Nunito-Regular.ttf') format('truetype');
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: Nunito;
+      src: url('/assets/assets/fonts/Nunito-Bold.ttf') format('truetype');
+      font-weight: 700;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: Nunito;
+      src: url('/assets/assets/fonts/Nunito-ExtraBold.ttf') format('truetype');
+      font-weight: 800;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: Comfortaa;
+      src: url('/assets/assets/fonts/Comfortaa-Bold.ttf') format('truetype');
+      font-weight: 700;
+      font-display: swap;
+    }
+    :root {
+      color-scheme: dark;
+      --amber: #e6a33a;
+      --gold: #efc272;
+      --teal: #61b5aa;
+      --text: #f2eee7;
+      --muted: #b8b0a7;
+      --iron: #242321;
+      --iron-raised: #33312e;
+      --rust-dark: #573526;
+      --rust: #a35d3d;
+      --border: #62564a;
+      --black: #151310;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font: 17px/1.6 Nunito, system-ui, sans-serif;
+      color: var(--text);
+      background-color: var(--black);
+      background-image:
+        radial-gradient(ellipse at 14% 6%, rgba(163,93,61,.18), transparent 34rem),
+        repeating-linear-gradient(2deg, rgba(255,255,255,.018) 0 1px, transparent 1px 17px),
+        linear-gradient(145deg, #2b2520, var(--black) 48%, #1a1714);
+      background-attachment: fixed;
+    }
+    header, footer {
+      background: rgba(36,35,33,.97);
+      border-color: var(--rust);
+      border-style: solid;
+      border-width: 0 0 1.5px;
+    }
+    header {
+      padding: 18px 24px;
+      box-shadow: 0 5px 16px rgba(0,0,0,.55);
+    }
+    footer {
+      border-color: var(--rust-dark);
+      border-width: 1.5px 0 0;
+      padding: 22px 24px;
+      color: var(--muted);
+    }
+    nav, .footer-inner { width: min(1080px, calc(100% - 40px)); margin: auto; }
+    main { width: min(920px, calc(100% - 40px)); margin: auto; }
+    nav { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    main { padding: 58px 0 76px; }
+    h1, h2, h3 { line-height: 1.15; }
+    h1 { margin: 14px 0 18px; font-size: clamp(2.5rem, 7vw, 4.7rem); max-width: 13ch; }
+    h2 { margin: 50px 0 14px; font-size: clamp(1.75rem, 4vw, 2.35rem); }
+    h3 { margin: 0 0 8px; font-size: 1.35rem; }
+    p, li { color: var(--muted); }
+    p { max-width: 70ch; }
+    strong { color: var(--text); }
+    a { color: var(--amber); text-underline-offset: 3px; }
+    a:hover, a:focus-visible { color: var(--gold); }
+    a:focus-visible { outline: 3px solid rgba(230,163,58,.45); outline-offset: 4px; border-radius: 4px; }
+    .brand { font: 700 24px/1 Comfortaa, Nunito, sans-serif; letter-spacing: .01em; text-decoration: none; }
+    .brand .dmx { color: var(--teal); }
+    .brand .tract { color: var(--amber); }
+    .lede { color: var(--text); font-size: clamp(1.2rem, 3vw, 1.5rem); line-height: 1.5; }
+    .hero-teal, .hero-amber { text-shadow: 0 3px 12px rgba(0,0,0,.85); }
+    .hero-teal { color: #7ee4d9; }
+    .hero-amber { color: #f3b957; }
+    .definition-card {
+      margin-top: 52px;
+      padding: 24px 26px;
+      border: 1.5px solid var(--rust-dark);
+      border-radius: 16px;
+      background: rgba(36,35,33,.96);
+      box-shadow: 0 12px 34px rgba(0,0,0,.34);
+    }
+    .definition-card h2 { margin: 0 0 10px; }
+    .definition-card p { margin: 0; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .card {
+      padding: 25px;
+      background: rgba(36,35,33,.97);
+      border: 1.5px solid var(--rust-dark);
+      border-radius: 16px;
+      box-shadow: 0 12px 34px rgba(0,0,0,.3);
+    }
+    .card p:first-of-type { margin-top: 0; }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .format { color: var(--teal); font-weight: 800; }
+    .software-list { padding-left: 1.25rem; }
+    .software-list li { margin: .7rem 0; }
+    .note {
+      margin-top: 20px;
+      padding: 18px 20px;
+      border: 1px solid rgba(97,181,170,.45);
+      border-radius: 12px;
+      background: rgba(97,181,170,.08);
+    }
+    .note.contribution {
+      margin-top: 28px;
+      border-color: rgba(230,163,58,.5);
+      background: rgba(230,163,58,.08);
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 34px; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      min-height: 48px;
+      padding: 11px 20px;
+      border: 1px solid var(--amber);
+      border-radius: 12px;
+      color: var(--black);
+      background: var(--amber);
+      font-weight: 800;
+      text-decoration: none;
+      box-shadow: 0 4px 14px rgba(230,163,58,.22);
+    }
+    .button.secondary { color: var(--text); border-color: var(--rust); background: transparent; box-shadow: none; }
+    .button:hover, .button:focus-visible { color: var(--black); background: var(--gold); }
+    .footer-inner, .footer-links { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
+    .footer-inner { justify-content: space-between; }
+    .footer-links { justify-content: center; }
+    .footer-links a { min-height: 44px; display: inline-flex; align-items: center; color: var(--muted); font-weight: 800; }
+    .sho-wordmark {
+      font: 700 18px/1 Comfortaa, Nunito, sans-serif;
+      letter-spacing: .02em;
+      text-decoration: none;
+    }
+    .sho-wordmark .sho { color: #ffab00; }
+    .sho-wordmark .dot { color: #ffc94a; }
+    .sho-wordmark .run { color: #1fd4c4; }
+    @media (max-width: 680px) {
+      nav { align-items: flex-start; flex-direction: column; }
+      main { padding-top: 38px; }
+      .grid { grid-template-columns: 1fr; }
+      .card { padding: 21px; }
+      .definition-card { margin-top: 38px; padding: 21px; }
+      .footer-inner { justify-content: center; text-align: center; }
+      .footer-links { gap: 8px 14px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <nav aria-label="Primary navigation">
+      <a class="brand" href="/" aria-label="dmxtract"><span class="dmx">dmx</span><span class="tract">tract</span></a>
+      <a href="/">Open the fixture builder</a>
+    </nav>
+  </header>
+  <main>
+    <h1>A <span class="hero-teal">light profile</span> shouldn’t be a <span class="hero-amber">heavy lift</span>.</h1>
+    <p class="lede">Turn the manual you already have into a fixture profile you can check, test, and use.</p>
+
+    <section class="definition-card">
+      <h2>What is a fixture profile?</h2>
+      <p>A DMX light listens to numbered controls called channels. One channel might be brightness, another red, another pan, and another a wheel of gobos. A fixture profile tells your software what every channel and value means so it can show useful controls instead of 20 mystery sliders.</p>
+    </section>
+
+    <h2>Two useful open formats</h2>
+    <div class="grid">
+      <section class="card">
+        <h3><a href="https://open-fixture-library.org/">OFL</a></h3>
+        <p class="format">Open Fixture Library</p>
+        <p>OFL is a community-maintained JSON description of a fixture's DMX modes, channels, ranges, wheels, and physical details. The Open Fixture Library can turn that shared description into files for several lighting applications.</p>
+        <p>Its current export list includes:</p>
+        <ul class="software-list">
+          <li><a href="https://sho.run/">sho.run</a>, which can import OFL JSON as a custom fixture</li>
+          <li><a href="https://www.qlcplus.org/">QLC+</a> 4.12.2</li>
+          <li><a href="https://www.dmxcontrol.de/en/">DMXControl 3</a></li>
+          <li><a href="https://www.millumin.com/">Millumin</a></li>
+          <li><a href="https://www.ecue.com/">e:cue</a></li>
+        </ul>
+        <p><a href="https://open-fixture-library.org/">See OFL's current export formats</a>.</p>
+      </section>
+
+      <section class="card">
+        <h3><a href="https://gdtf-share.com/">GDTF</a></h3>
+        <p class="format">General Device Type Format</p>
+        <p>GDTF is an open interchange format for consoles, design tools, and visualizers. A GDTF file can describe DMX behavior as well as wheels, emitters, geometry, and other physical details when that information is available.</p>
+        <p>Documented GDTF workflows include:</p>
+        <ul class="software-list">
+          <li><a href="https://help.malighting.com/grandMA3/2.4/HTML/ft_import_gdtf.html">MA Lighting grandMA3</a></li>
+          <li><a href="https://docs.chamsys.co.uk/magicq/manual/head_editor.html#importing-gdtf-files">ChamSys MagicQ</a></li>
+          <li><a href="https://www.etcconnect.com/WebDocs/Controls/EosFamilyOnlineHelp/en/Content/05_Show_Files/Importing_Show_Data.htm">ETC Eos</a></li>
+          <li><a href="https://app-help.vectorworks.net/2025/eng/VW2025_Guide/LightingDesign2/Attaching_GDTF_data.htm">Vectorworks Spotlight and Vision workflows</a></li>
+          <li><a href="https://sho.run/">sho.run</a>, which can import GDTF as a custom fixture</li>
+        </ul>
+      </section>
+    </div>
+
+    <div class="note contribution">
+      <strong>Which one should you download?</strong>
+      <p>Choose the format named by your lighting software. If it supports both, OFL is excellent for open fixture-data sharing and GDTF carries a broader device description. Support can vary by software version, and complex fixtures should always be checked before a show. DMXtract's first GDTF exports use a basic fixture shape when no authorized 3D model is available.</p>
+    </div>
+
+    <h2>Open DMX does not always mean open profiles</h2>
+    <p>These are two different layers. Art-Net and sACN are open ways for an app to send DMX values across a network. OFL and GDTF are ways to describe what those values mean for a particular light.</p>
+    <p><a href="https://luminair.app/">Luminair</a> supports open network output including Art-Net and sACN, but its current documentation describes its own Fixture Cloud and in-app profile creator rather than direct OFL or GDTF import. <a href="https://lightkeyapp.com/en/">Lightkey</a> also has a built-in library and profile editor, but does not currently document direct OFL or GDTF import. <a href="https://support.obsidiancontrol.com/Content/Support/Fixture_Library.htm">Obsidian ONYX</a> uses an AtlaBase-backed fixture library and its own Fixture Library Editor; its documented patch exchange still matches fixtures against that library rather than importing OFL or GDTF definitions. A DMXtract v1 export therefore does not import directly into these apps today.</p>
+    <p>That gap is part of the reason portable fixture data matters. DMXtract starts with OFL and GDTF because they are open, documented targets; additional open adapters can be built without making your fixture information start over again.</p>
+
+    <h2>Open information lifts every show</h2>
+    <p>A useful fixture profile should not be trapped in one person's show file or one manufacturer's download portal. DMXtract is an MIT-licensed project because a profile corrected by one student, volunteer, DJ, programmer, or venue can save the next person hours of frustration.</p>
+    <p>The manual and photos stay on your device. You can save an editable DMXtract project, export OFL and GDTF, and contribute improvements wherever those communities accept them.</p>
+
+    <div class="note">
+      <strong>Test it. Then pass it on.</strong>
+      <p>If you have tested your profile on the real light and you are feeling altruistic, consider contributing it to the <a href="https://open-fixture-library.org/add-fixture">Open Fixture Library</a> or uploading it to <a href="https://gdtf-share.com/">GDTF Share</a>. Tell the community what you tested, and check each library's contribution requirements before submitting.</p>
+      <p>There are tens of thousands of fixture models spread across more than a thousand manufacturers, house brands, and white-label names. The faster these shared libraries grow, the more confident everyone can be that a new app or console will recognize the lights they already own—and produce one fewer headache than the last one.</p>
+    </div>
+
+    <div class="actions">
+      <a class="button" href="/">Build a fixture profile</a>
+      <a class="button secondary" href="https://github.com/sho-run/dmxtract">View the open-source project</a>
+      <a class="button secondary" href="/privacy/">Read the privacy promise</a>
+    </div>
+  </main>
+  <footer>
+    <div class="footer-inner">
+      <span>Compatibility links reviewed August 4, 2026</span>
+      <div class="footer-links">
+        <a href="https://github.com/sho-run/dmxtract">GitHub</a>
+        <a href="/privacy/">Privacy</a>
+        <span>Open source by</span>
+        <a class="sho-wordmark" href="https://sho.run/" aria-label="sho.run"><span class="sho">sho</span><span class="dot">.</span><span class="run">run</span></a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

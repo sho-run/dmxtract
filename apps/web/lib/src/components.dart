@@ -272,15 +272,19 @@ class _Header extends StatelessWidget {
                   const TextSpan(
                     children: [
                       TextSpan(
-                        text: 'DMX',
+                        text: 'dmx',
+                        style: TextStyle(color: DmxColors.teal),
+                      ),
+                      TextSpan(
+                        text: 'tract',
                         style: TextStyle(color: DmxColors.amber),
                       ),
-                      TextSpan(text: 'tract'),
                     ],
                   ),
                   style: TextStyle(
+                    fontFamily: 'Comfortaa',
                     fontSize: compact ? 22 : 25,
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w700,
                     color: DmxColors.text,
                   ),
                 ),
@@ -759,17 +763,63 @@ class _Footer extends StatelessWidget {
           compact: compact,
         ),
         _FooterLink(label: 'Privacy', url: '/privacy/', compact: compact),
+        _FooterLink(label: 'About', url: '/about/', compact: compact),
         if (!compact)
           const Text(
             'Open source by',
             style: TextStyle(color: DmxColors.muted),
           ),
-        _FooterLink(
-          label: compact ? 'By sho.run' : 'sho.run',
-          url: 'https://sho.run/',
-          compact: compact,
-        ),
+        _ShoRunFooterLink(compact: compact),
       ],
+    ),
+  );
+}
+
+class _ShoRunFooterLink extends StatelessWidget {
+  const _ShoRunFooterLink({required this.compact});
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: compact ? 'Open source by sho.run' : 'sho.run',
+    link: true,
+    child: TextButton(
+      onPressed: () =>
+          web.window.open('https://sho.run/', '_blank', 'noopener,noreferrer'),
+      style: TextButton.styleFrom(
+        minimumSize: Size(44, compact ? 36 : 44),
+        padding: const EdgeInsets.symmetric(horizontal: 5),
+      ),
+      child: ExcludeSemantics(
+        child: Text.rich(
+          TextSpan(
+            children: [
+              if (compact)
+                const TextSpan(
+                  text: 'By ',
+                  style: TextStyle(color: DmxColors.muted),
+                ),
+              const TextSpan(
+                text: 'sho',
+                style: TextStyle(color: Color(0xffffab00)),
+              ),
+              const TextSpan(
+                text: '.',
+                style: TextStyle(color: Color(0xffffc94a)),
+              ),
+              const TextSpan(
+                text: 'run',
+                style: TextStyle(color: Color(0xff1fd4c4)),
+              ),
+            ],
+          ),
+          style: const TextStyle(
+            fontFamily: 'Comfortaa',
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
     ),
   );
 }

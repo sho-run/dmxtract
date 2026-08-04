@@ -1,0 +1,27 @@
+# DMXtract
+
+> DMXtract is a free, MIT-licensed, beginner-first web tool that turns a DMX lighting-fixture manual into an editable OFL or GDTF profile. PDF and image processing happens locally in the browser.
+
+DMXtract helps students, volunteers, amateur DJs, venue technicians, and lighting programmers use fixtures whose profiles are missing from their preferred console or application. A user adds a manual or photos, checks the extracted DMX table, can test the fixture through the optional local bridge, and downloads a portable profile.
+
+## Important pages
+
+- [Fixture builder](https://dmxtract.sho.run/): Add a PDF, screenshot, or one or more phone photos and create a fixture profile.
+- [About DMXtract](https://dmxtract.sho.run/about/): Why portable fixture information matters, what OFL and GDTF mean, and examples of software that supports them.
+- [Privacy](https://dmxtract.sho.run/privacy/): Manuals and photos stay in the browser; optional lookup sends only manufacturer, model, and mode footprints.
+- [Open-source repository](https://github.com/sho-run/dmxtract): MIT-licensed application source, schemas, bridge protocol, tests, and documentation.
+- [Acknowledgments](https://github.com/sho-run/dmxtract/blob/main/ACKNOWLEDGMENTS.md): Open-source projects and standards that make DMXtract possible.
+
+## Formats and interfaces
+
+- [DMXtract fixture schema](https://dmxtract.sho.run/schemas/fixture-v1.json): Canonical editable project model.
+- [Fixture lookup API](https://github.com/sho-run/dmxtract/blob/main/schemas/fixture-lookup-v1.openapi.yaml): Optional, deployer-controlled existing-profile lookup contract.
+- [Bridge API](https://github.com/sho-run/dmxtract/blob/main/schemas/bridge-v1.openapi.yaml): Loopback hardware bridge protocol for Art-Net, sACN, and supported USB DMX transports.
+- [Open Fixture Library](https://open-fixture-library.org/): Community fixture-data project targeted by DMXtract's OFL export.
+- [GDTF Share](https://gdtf-share.com/): Community and manufacturer GDTF fixture profiles.
+
+## Safety and limitations
+
+Generated profiles are drafts until checked against the manual and tested on an isolated fixture. Output starts disabled and at zero. Strobe, lamp, reset, and maintenance ranges require explicit unlocking. DMXtract's first GDTF exports use generic geometry when an authorized 3D model is unavailable.
+
+`llms.txt` is provided as a concise discovery aid. It does not grant additional rights beyond the licenses and terms attached to each linked resource.
