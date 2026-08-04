@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:dmxtract_web/src/extraction_rules.dart';
+import 'package:dmxtract_web/src/model.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -272,6 +273,43 @@ DMX Channel Assignments and Values
     expect(result.questions, isNot(contains(contains('channel rows'))));
   });
 
+  test('recovers missing scanned row numbers and repeated color blocks', () {
+    const manual = '''BETOPPER Model: Scan Grid
+CH8 Channel Table
+NO.   Value   Function
+1   000-255   LED1 red
+2   000-255   LED1 green
+5   000-255   LED3 red
+6   000-255   LED3 green
+7   0-9   Void
+10-255   Strobe (slow to fast)
+000-255   R1
+Color Temperature
+NO.   Value   Function
+5   112-127   This is an appendix row, not channel five
+''';
+
+    final result = fixtureFromManualText(manual, 'scan-grid.pdf');
+    final fixture = result.fixture;
+    final mode = fixture.modes.single;
+    final channels = mode.channelIds
+        .map((id) => fixture.channels.firstWhere((item) => item.id == id))
+        .toList();
+
+    expect(channels.map((item) => item.name), [
+      'LED 1 red',
+      'LED 1 green',
+      'LED 2 red',
+      'LED 2 green',
+      'LED 3 red',
+      'LED 3 green',
+      'Light switch / strobe',
+      'Red 1',
+    ]);
+    expect(channels[4].ranges, hasLength(1));
+    expect(channels.where((item) => item.confidence < .5), isEmpty);
+  });
+
   test('reports incomplete coded tables by personality', () {
     final result = fixtureFromManualText('''BETOPPER Model: TEST100
 CH12 Channel Table
@@ -399,6 +437,291 @@ a   Iii-2cs   Y-axis
     expect(channels.first.ranges.single.confidence, .45);
     expect(channels.last.ranges.single.safety, 'reset');
     expect(result.questions, isNot(contains(contains('channel rows'))));
+  });
+
+  test('preserves contextual Chauvet personalities with duplicate sizes', () {
+    final manual = StringBuffer('''CHAUVET PROFESSIONAL
+COLORado PXL Curve 12 User Manual Rev. 9
+Single Control Mode
+Basic (20CH)
+''');
+    for (var channel = 1; channel <= 20; channel++) {
+      manual.writeln('$channel Control $channel 000 ↔ 255 Full range');
+    }
+    void parallel(List<int> counts, List<String> names) {
+      manual.writeln(
+        [
+          for (var index = 0; index < counts.length; index++)
+            '${names[index]} (${counts[index]}CH)',
+        ].join(' / '),
+      );
+      final largest = counts.reduce((a, b) => a > b ? a : b);
+      for (var channel = 1; channel <= largest; channel++) {
+        manual.writeln(
+          '${[for (final count in counts) channel <= count ? '$channel' : '–'].join(' ')} Control $channel 000 ↔ 255 Full range',
+        );
+      }
+    }
+
+    parallel([169, 169], ['Advanced2', 'Full PXL']);
+    parallel([53, 101, 155, 179], ['Basic2', 'Standard', 'Advanced', 'Tour']);
+    manual.writeln('Dual Control Mode - Movement\nBasic (8CH)');
+    for (var channel = 1; channel <= 8; channel++) {
+      manual.writeln('$channel Control $channel 000 ↔ 255 Full range');
+    }
+    parallel([41, 53, 59], ['Basic2', 'Standard', 'Advanced']);
+    manual.writeln('Dual Control Mode - Pixels');
+    parallel([36, 48, 96], ['Basic', 'Standard', 'Advanced']);
+
+    final result = fixtureFromManualText(
+      manual.toString(),
+      'COLORado-PXL-Curve-12_UM_Rev9.pdf',
+    );
+    expect(result.fixture.manufacturer, 'Chauvet Professional');
+    expect(result.fixture.model, 'COLORado PXL Curve 12');
+    expect(result.fixture.modes.map((mode) => mode.name), [
+      'Single · Basic',
+      'Single · Advanced2',
+      'Single · Full PXL',
+      'Single · Basic2',
+      'Single · Standard',
+      'Single · Advanced',
+      'Single · Tour',
+      'Movement · Basic',
+      'Movement · Basic2',
+      'Movement · Standard',
+      'Movement · Advanced',
+      'Pixels · Basic',
+      'Pixels · Standard',
+      'Pixels · Advanced',
+    ]);
+    expect(result.fixture.modes.map((mode) => mode.channelIds.length), [
+      20,
+      169,
+      169,
+      53,
+      101,
+      155,
+      179,
+      8,
+      41,
+      53,
+      59,
+      36,
+      48,
+      96,
+    ]);
+    expect(
+      result.fixture.modes[1].channelIds.toSet().intersection(
+        result.fixture.modes[2].channelIds.toSet(),
+      ),
+      isEmpty,
+    );
+    expect(
+      result.questions.where((item) => item.contains('channel rows')),
+      isEmpty,
+    );
+  });
+
+  test('maps stacked parallel headers back to the named personality', () {
+    const manual = '''CHAUVET PROFESSIONAL
+COLORado Header Test User Manual Rev. 1
+Single Control Mode
+Advanced2 (6CH) / Full PXL (6CH)
+  Full Advanced
+  PXL      2    Function
+  1       –    Tilt 1       000 ↔ 255 Full range
+  2       –    Fine tilt 1  000 ↔ 255 Full range
+  3       –    Red 1        000 ↔ 255 Full range
+  4       –    Fine red 1   000 ↔ 255 Full range
+  5       –    Green 1      000 ↔ 255 Full range
+  6       –    Fine green   000 ↔ 255 Full range
+  –       1    Control      000 ↔ 255 Full range
+  –       2    Red          000 ↔ 255 Full range
+  –       3    Fine red     000 ↔ 255 Full range
+  –       4    Green        000 ↔ 255 Full range
+  –       5    Fine green   000 ↔ 255 Full range
+  –       6    Blue         000 ↔ 255 Full range
+Dual Control Mode - Movement
+''';
+
+    final result = fixtureFromManualText(manual, 'stacked-header.pdf');
+    final advanced = result.fixture.modes.first;
+    final fullPxl = result.fixture.modes.last;
+    List<DmxChannel> channels(FixtureMode mode) => mode.channelIds
+        .map(
+          (id) => result.fixture.channels.firstWhere((item) => item.id == id),
+        )
+        .toList();
+
+    expect(advanced.name, 'Single · Advanced2');
+    expect(channels(advanced).first.name, 'Control');
+    expect(fullPxl.name, 'Single · Full PXL');
+    expect(channels(fullPxl).first.name, 'Tilt 1');
+    expect(channels(fullPxl).last.name, 'Green 1 fine');
+    expect(channels(fullPxl).last.fineOf, channels(fullPxl)[4].id);
+  });
+
+  test('attaches coded appendix value tables to their controls', () {
+    const manual = '''BETOPPER Model: APPENDIX5
+CH5 Channel Table
+1 000-255 Color_Temperature
+2 000-255 Mode_tableI
+3 000-255 Mode table 2
+4 000-255 Shutter
+5 000-255 Background color
+Color Temperature
+1 0-9 Void
+2 10-13 Color temperature 1
+61 246-249 Color temperature 60
+63 254-255 Color temperature 62
+Mode table I
+10 17-55 Mode 9
+12 57-95 Mode 11
+16 136-174 Mode 15
+18 176-214 Mode 17
+Shutter
+1 0-31 Strobe off
+2 32-63 Strobe 1
+3 64-95 Strobe 2
+4 96-111 Strobe 3
+5 112-127 Strobe 4
+6 128-143 Strobe 5
+7 144-159 Strobe 6
+8 160-175 Strobe 7
+9 176-191 Strobe 8
+10 192-223 Strobe 9
+11 224-255 Strobe on
+Mode table 2
+2 4-10 Mode 1
+35 235-241 Mode 34
+37 249-255 Mode 36
+Background color
+1 0-7 Color 0
+62 248-251 Color 61
+63 252-255 Color 62
+''';
+
+    final result = fixtureFromManualText(manual, 'appendix.pdf');
+    expect(result.fixture.channels.map((item) => item.name), [
+      'Color temperature',
+      'Mode table 1',
+      'Mode table 2',
+      'Shutter / strobe',
+      'Background color',
+    ]);
+    expect(result.fixture.channels.map((item) => item.ranges.length), [
+      63,
+      29,
+      37,
+      11,
+      63,
+    ]);
+    expect(result.fixture.channels[3].ranges[1].safety, 'strobe');
+  });
+
+  test('expands inherited Martin pixel modes through multiple universes', () {
+    final manual = StringBuffer(
+      '''Martin MAC Aura Raven XIP User Manual Revision C
+Compact DMX Mode
+22 DMX channels
+1 Shutter/strobe
+2 Dimmer
+3 0–65535 Closed to open
+4 Red
+5 0–65535 Intensity
+6 Green
+7 0–65535 Intensity
+8 Blue
+9 0–65535 Intensity
+10 CTC
+11 Green/Magenta shift (tint)
+12 Virtual color wheel
+13 Zoom
+14 0–65535 Narrow to wide
+15 Beamshaper
+16 0–65535 Index
+17 Pan
+18 0–65535 Left to right
+19 Tilt
+20 0–65535 Forward to backward
+21 Fixture Control/Settings
+22 LED PWM frequency
+Basic DMX Mode
+38 DMX channels
+Channels 1 – 22 as in Compact Mode
+''',
+    );
+    for (var channel = 23; channel <= 38; channel++) {
+      manual.writeln('$channel Effect $channel');
+    }
+    manual.write('''Extended DMX Mode
+149 DMX channels
+Channels 1 – 38 as in Basic Mode
+37 x RGB channels = 111 channels for individual RGB Beam pixel control
+Ludicrous DMX Mode
+266 DMX channels
+Channels 1 – 149 as in Extended Mode
+117 channels for Aura control in segments
+Plaid DMX Mode
+851 DMX channels
+Channels 1 – 149 as in Extended Mode
+702 channels for individual RGB control of all 234 Aura pixels
+Compact Direct DMX Mode
+22 DMX channels
+''');
+    for (var channel = 1; channel <= 22; channel++) {
+      manual.writeln('$channel Direct control $channel');
+    }
+    manual.writeln('Virtual color wheel*');
+    manual.writeln('0–10 Open');
+    for (var preset = 1; preset <= 48; preset++) {
+      final start = 9 + preset * 2;
+      manual.writeln('$start–${start + 1} Preset $preset');
+    }
+    manual.writeln('107–190 No function');
+    manual.writeln('13 Zoom');
+
+    final result = fixtureFromManualText(
+      manual.toString(),
+      'UM-SFTY_MACAuraRavenXIP_EN_C.pdf',
+    );
+    expect(result.fixture.manufacturer, 'Martin');
+    expect(result.fixture.model, 'MAC Aura Raven XIP');
+    expect(result.fixture.modes.map((mode) => mode.name), [
+      'Compact',
+      'Basic',
+      'Extended',
+      'Ludicrous',
+      'Plaid',
+      'Compact Direct',
+    ]);
+    expect(result.fixture.modes.map((mode) => mode.channelIds.length), [
+      22,
+      38,
+      149,
+      266,
+      851,
+      22,
+    ]);
+    expect(result.fixture.modes[4].breaks, 2);
+    final plaid = result.fixture.modes[4].channelIds
+        .map(
+          (id) => result.fixture.channels.firstWhere((item) => item.id == id),
+        )
+        .toList();
+    expect(plaid[149].name, 'Aura pixel 1 Red');
+    expect(plaid[850].name, 'Aura pixel 234 Blue');
+    expect(plaid.where((channel) => channel.confidence < .5), isEmpty);
+    expect(result.fixture.wheels.single['slots'], hasLength(49));
+    final wheelChannel = result.fixture.channels.firstWhere(
+      (channel) => channel.kind == 'colorWheel',
+    );
+    expect(wheelChannel.ranges, hasLength(50));
+    expect(
+      result.questions.where((question) => question.contains('color wheel')),
+      isEmpty,
+    );
   });
 
   test('local PDF corpus or public golden corpus remains discoverable', () {

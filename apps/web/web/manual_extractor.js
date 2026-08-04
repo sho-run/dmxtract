@@ -220,7 +220,10 @@ async function extractPdf(bytes) {
       if (tableTextScore(detailed) >= tableTextScore(current.text) * 0.7) {
         // Keep the broad, low-resolution pass as well. It is often better at
         // headings while the detailed pass is better at individual table rows.
-        current.text = `${current.text}\n${detailed}`;
+        // Put the positioned pass first: on continuation pages a broad OCR
+        // pass can announce the next table before it emits the rows above that
+        // heading, which otherwise assigns those rows to the wrong mode.
+        current.text = `${detailed}\n${current.text}`;
       }
     }
   }
