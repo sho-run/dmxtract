@@ -67,10 +67,8 @@ fn main() {
                     let Some(payload) = line.strip_prefix("DMXTRACT_PAIRING\t") else {
                         continue;
                     };
-                    let mut fields = payload.trim().split('\t');
-                    let origin = fields.next().unwrap_or("unknown site");
-                    let code = fields.next().unwrap_or("------");
-                    let _ = status.set_text(format!("Pair {origin} · code {code}"));
+                    let code = payload.trim();
+                    let _ = status.set_text(format!("Approval requested · code {code}"));
                 }
             });
             Ok(())

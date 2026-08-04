@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../app_state.dart';
 import '../components.dart';
+import '../deployment_theme.dart';
 import '../theme.dart';
 
 class AddManualScreen extends StatelessWidget {
@@ -51,19 +52,7 @@ class AddManualScreen extends StatelessWidget {
                 : Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Container(
-                        width: 72,
-                        height: 72,
-                        decoration: BoxDecoration(
-                          color: DmxColors.rust.withValues(alpha: .2),
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        child: const Icon(
-                          Icons.file_download_outlined,
-                          size: 38,
-                          color: DmxColors.amber,
-                        ),
-                      ),
+                      const DeploymentManualDropMark(),
                       const SizedBox(height: 20),
                       Text(
                         'Drop your light’s manual here',

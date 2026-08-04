@@ -63,6 +63,35 @@ paths:
       responses:
         "200": { description: Origin-bound bearer token }
         "401": { description: Approval code is incorrect or expired }
+  /pair/{requestId}/status:
+    get:
+      operationId: pairingStatus
+      description: Polled by the exact requesting origin after the user acts in the local Bridge controls.
+      parameters: [{ $ref: "#/components/parameters/requestId" }]
+      responses:
+        "200": { description: Pending, approved, or denied status; an approval includes the origin-bound bearer token }
+        "401": { description: Browser origin does not match the pairing request }
+  /pair/{requestId}/approve:
+    post:
+      operationId: approvePairingLocally
+      description: Local Bridge-control form action protected by a secret rendered only into the loopback page.
+      parameters: [{ $ref: "#/components/parameters/requestId" }]
+      responses:
+        "200": { description: Access approved locally }
+        "401": { description: Local control-page token is missing or incorrect }
+  /pair/{requestId}/deny:
+    post:
+      operationId: denyPairingLocally
+      description: Local Bridge-control form action protected by a secret rendered only into the loopback page.
+      parameters: [{ $ref: "#/components/parameters/requestId" }]
+      responses:
+        "200": { description: Access denied locally }
+  /control/blackout:
+    post:
+      operationId: blackoutFromLocalControls
+      description: Stops output from the visible loopback control page. Requires its local control-page token.
+      responses:
+        "200": { description: Zero frame sent and output lease released }
   /test/begin:
     post:
       operationId: beginTest
@@ -115,6 +144,11 @@ components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer }
   parameters:
+    requestId:
+      name: requestId
+      in: path
+      required: true
+      schema: { type: string }
     leaseId:
       name: leaseId
       in: path

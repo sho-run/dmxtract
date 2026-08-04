@@ -34,7 +34,8 @@ flutter config --no-analytics
 cd "$repository_root/apps/web"
 flutter pub get
 flutter build web --release --base-href / \
-  --dart-define=FLUTTER_WEB_CANVASKIT_URL=/canvaskit/
+  --dart-define=FLUTTER_WEB_CANVASKIT_URL=/canvaskit/ \
+  --dart-define=DMXTRACT_CUSTOM_THEME="${DMXTRACT_CUSTOM_THEME:-false}"
 
 # Publish the canonical fixture schema at the stable URL embedded in projects.
 mkdir -p build/web/schemas

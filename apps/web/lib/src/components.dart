@@ -2,6 +2,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 import 'app_state.dart';
+import 'deployment_theme.dart';
 import 'theme.dart';
 
 class DmxScope extends InheritedNotifier<DmxtractState> {
@@ -67,9 +68,10 @@ class _BeginnerPageShellState extends State<BeginnerPageShell> {
         fit: StackFit.expand,
         children: [
           DecoratedBox(
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               color: DmxColors.canvas,
-              gradient: LinearGradient(
+              image: DeploymentTheme.background,
+              gradient: const LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: [
@@ -182,20 +184,7 @@ class _ManualDropReadyOverlay extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                width: 72,
-                height: 72,
-                decoration: BoxDecoration(
-                  color: DmxColors.amber.withValues(alpha: .13),
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: DmxColors.bezel),
-                ),
-                child: const Icon(
-                  Icons.file_download_outlined,
-                  size: 40,
-                  color: DmxColors.amber,
-                ),
-              ),
+              const DeploymentManualDropMark(large: true),
               const SizedBox(height: 20),
               Text(
                 'Drop to read this manual',
@@ -636,7 +625,7 @@ class BridgeConnectionStatus extends StatelessWidget {
           active
               ? label
               : available
-              ? 'Bridge ready'
+              ? 'Bridge found on this Mac'
               : 'Bridge not running',
           style: TextStyle(color: color, fontWeight: FontWeight.w800),
         ),

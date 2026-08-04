@@ -252,6 +252,8 @@ class DmxtractState extends ChangeNotifier {
 
   Future<void> confirmPair(String requestId, String code) =>
       bridge.confirmPair(requestId, code);
+  Future<PairApprovalStatus> checkPairApproval(String requestId) =>
+      bridge.checkPairApproval(requestId);
   Future<void> beginOutput(Map<String, Object?> config) async {
     outputLabel = await bridge.begin(Uri.base.origin, config);
     outputActive = true;

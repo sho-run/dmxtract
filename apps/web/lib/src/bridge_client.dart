@@ -21,9 +21,14 @@ class ArtNetNode {
   );
 }
 
+enum PairApprovalStatus { pending, approved, denied }
+
 class BridgeClient {
-  BridgeClient({this.baseUrl = 'http://127.0.0.1:46321'});
+  BridgeClient({this.baseUrl = 'http://127.0.0.1:46321', http.Client? client})
+    : _client = client ?? http.Client();
   final String baseUrl;
+  final http.Client _client;
+  String get controlsUrl => '$baseUrl/';
   String? token;
   String? leaseId;
 
@@ -31,7 +36,7 @@ class BridgeClient {
     Duration timeout = const Duration(seconds: 12),
   }) async {
     try {
-      final response = await http
+      final response = await _client
           .get(Uri.parse('$baseUrl/v1/health'))
           .timeout(timeout);
       return response.statusCode == 200;
@@ -41,7 +46,7 @@ class BridgeClient {
   }
 
   Future<List<ArtNetNode>> discoverArtNet() async {
-    final response = await http
+    final response = await _client
         .get(Uri.parse('$baseUrl/v1/discovery/artnet'))
         .timeout(const Duration(seconds: 5));
     if (response.statusCode >= 400) return const [];
@@ -66,6 +71,25 @@ class BridgeClient {
       'code': code,
     }, authorize: false);
     token = response['token'] as String;
+  }
+
+  Future<PairApprovalStatus> checkPairApproval(String requestId) async {
+    final response = await _client.get(
+      Uri.parse('$baseUrl/v1/pair/$requestId/status'),
+    );
+    final decoded = jsonDecode(response.body) as Map<String, Object?>;
+    if (response.statusCode >= 400) {
+      throw Exception(decoded['error'] ?? 'Bridge approval failed');
+    }
+    switch (decoded['status']) {
+      case 'approved':
+        token = decoded['token'] as String;
+        return PairApprovalStatus.approved;
+      case 'denied':
+        return PairApprovalStatus.denied;
+      default:
+        return PairApprovalStatus.pending;
+    }
   }
 
   Future<String> begin(String origin, Map<String, Object?> output) async {
@@ -115,7 +139,7 @@ class BridgeClient {
     Map<String, Object?> body, {
     bool authorize = true,
   }) async {
-    final response = await http.post(
+    final response = await _client.post(
       Uri.parse('$baseUrl$path'),
       headers: {
         'content-type': 'application/json',

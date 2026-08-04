@@ -65,6 +65,9 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  assets:
+    - assets/deployment/
+
   fonts:
     # Flutter uses Roboto before the app theme is available. Map that family to
     # the bundled Nunito files so startup never reaches Google Fonts.

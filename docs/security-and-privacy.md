@@ -4,7 +4,7 @@
 - Fonts, textures, PDF parsing, OCR, language data, and format logic are self-hosted.
 - Browser autosave contains the editable fixture project, not the original manual bytes.
 - The bridge listens on loopback only and does not expose a LAN service.
-- Pairing requires a short-lived native approval code. Tokens are origin-bound and die with the bridge process.
+- Pairing requires an explicit decision on the visible loopback Bridge-control page. Its approval forms contain a secret that is never returned to the requesting website. Session tokens are origin-bound and die with the bridge process.
 - Only one controller lease can produce output.
 - Output starts at zero. The watchdog, disconnect paths, explicit Stop action, and lease end black out all tracked universes.
 - Hazardous ranges require a distinct unlock. UI labels are not trusted as the only safety boundary.
@@ -37,7 +37,8 @@ MCP receives only the canonical fixture JSON explicitly supplied by its caller.
 It has no fixture-library lookup tool and cannot read or return website provider
 configuration, GDTF Share credentials, browser storage, manuals, pairing tokens,
 or environment variables. Hardware tools remain absent until native approval.
-The terminal pairing line contains the one-time code only; the requesting web
-origin and code are excluded from structured logs.
+The terminal pairing line contains the compatibility code only; the requesting
+web origin and code are excluded from structured logs. The origin is shown on
+the local Bridge-control page so the user can see exactly who is asking.
 
 DMX lighting can still create hazardous motion, flashes, lamp strikes, or maintenance actions. Users should keep the fixture isolated from people and rigging while creating a profile.
