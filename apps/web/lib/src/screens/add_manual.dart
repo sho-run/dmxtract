@@ -10,6 +10,7 @@ class AddManualScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = DmxScope.of(context);
+    final compact = MediaQuery.sizeOf(context).width < 600;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -20,65 +21,111 @@ class AddManualScreen extends StatelessWidget {
             children: [
               Text(
                 'Add your light’s manual',
-                style: Theme.of(context).textTheme.displaySmall,
+                style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                  fontSize: compact ? 30 : null,
+                ),
               ),
               const SizedBox(height: 10),
               Text(
                 'We’ll look for the DMX table and turn it into something you can check, test, and download.',
-                style: Theme.of(context).textTheme.bodyLarge,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyLarge?.copyWith(fontSize: compact ? 16 : null),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 26),
+        SizedBox(height: compact ? 18 : 26),
         InkWell(
-          onTap: state.busy ? null : state.pickManual,
+          onTap: state.busy || state.photos.isNotEmpty
+              ? null
+              : state.pickManual,
           borderRadius: BorderRadius.circular(18),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 180),
             width: double.infinity,
-            constraints: const BoxConstraints(minHeight: 320),
-            padding: const EdgeInsets.all(32),
+            constraints: BoxConstraints(minHeight: compact ? 280 : 320),
             decoration: BoxDecoration(
-              color: DmxColors.panel.withValues(alpha: .94),
+              color: DeploymentTheme.enabled
+                  ? Colors.transparent
+                  : DmxColors.panel.withValues(alpha: .94),
               borderRadius: BorderRadius.circular(18),
               border: Border.all(
                 color: state.error == null ? DmxColors.rust : DmxColors.red,
                 width: 2,
               ),
             ),
-            child: state.busy
-                ? _Progress(state: state)
-                : Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const DeploymentManualDropMark(),
-                      const SizedBox(height: 20),
-                      Text(
-                        'Drop your light’s manual here',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.headlineMedium,
+            child: DeploymentIronSurface(
+              borderRadius: BorderRadius.circular(16),
+              child: Padding(
+                padding: EdgeInsets.all(compact ? 20 : 32),
+                child: state.busy
+                    ? _Progress(state: state)
+                    : state.photos.isNotEmpty
+                    ? _PhotoTray(state: state, compact: compact)
+                    : Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          DeploymentManualDropMark(compact: compact),
+                          SizedBox(height: compact ? 14 : 20),
+                          Text(
+                            compact
+                                ? 'Add photos or a manual'
+                                : 'Drop your light’s manual here',
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.headlineMedium
+                                ?.copyWith(fontSize: compact ? 24 : null),
+                          ),
+                          const SizedBox(height: 7),
+                          const Text(
+                            'PDF, screenshot, or phone photo',
+                            style: TextStyle(
+                              fontSize: 17,
+                              color: DmxColors.muted,
+                            ),
+                          ),
+                          const SizedBox(height: 7),
+                          const Text(
+                            'You can also reopen a .dmxtract.json project.',
+                            style: TextStyle(color: DmxColors.muted),
+                          ),
+                          SizedBox(height: compact ? 16 : 20),
+                          if (compact) ...[
+                            FilledButton.icon(
+                              onPressed: state.pickPhotos,
+                              icon: const Icon(Icons.add_a_photo_outlined),
+                              label: const Text('Take or add photos'),
+                            ),
+                            const SizedBox(height: 10),
+                            OutlinedButton.icon(
+                              onPressed: state.pickManual,
+                              icon: const Icon(Icons.picture_as_pdf_outlined),
+                              label: const Text('Choose PDF or project'),
+                            ),
+                          ] else
+                            Wrap(
+                              alignment: WrapAlignment.center,
+                              spacing: 12,
+                              runSpacing: 10,
+                              children: [
+                                FilledButton.icon(
+                                  onPressed: state.pickManual,
+                                  icon: const Icon(Icons.folder_open_outlined),
+                                  label: const Text('Choose manual'),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed: state.pickPhotos,
+                                  icon: const Icon(Icons.add_a_photo_outlined),
+                                  label: const Text('Add several photos'),
+                                ),
+                              ],
+                            ),
+                          SizedBox(height: compact ? 14 : 18),
+                          PrivacyPill(compact: compact),
+                        ],
                       ),
-                      const SizedBox(height: 7),
-                      const Text(
-                        'PDF, screenshot, or phone photo',
-                        style: TextStyle(fontSize: 17, color: DmxColors.muted),
-                      ),
-                      const SizedBox(height: 7),
-                      const Text(
-                        'You can also reopen a .dmxtract.json project.',
-                        style: TextStyle(color: DmxColors.muted),
-                      ),
-                      const SizedBox(height: 20),
-                      FilledButton.icon(
-                        onPressed: state.pickManual,
-                        icon: const Icon(Icons.folder_open_outlined),
-                        label: const Text('Choose manual'),
-                      ),
-                      const SizedBox(height: 18),
-                      const PrivacyPill(),
-                    ],
-                  ),
+              ),
+            ),
           ),
         ),
         if (state.error != null)
@@ -148,6 +195,155 @@ class AddManualScreen extends StatelessWidget {
       ],
     );
   }
+}
+
+class _PhotoTray extends StatelessWidget {
+  const _PhotoTray({required this.state, required this.compact});
+  final DmxtractState state;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      Text(
+        '${state.photos.length} ${state.photos.length == 1 ? 'photo' : 'photos'} ready',
+        style: Theme.of(
+          context,
+        ).textTheme.headlineMedium?.copyWith(fontSize: compact ? 24 : null),
+      ),
+      const SizedBox(height: 6),
+      const Text(
+        'Put the channel-table pages in the order you want them read.',
+        textAlign: TextAlign.center,
+      ),
+      const SizedBox(height: 16),
+      Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 10,
+        runSpacing: 10,
+        children: [
+          for (var index = 0; index < state.photos.length; index++)
+            _PhotoTile(
+              photo: state.photos[index],
+              number: index + 1,
+              onRemove: () => state.removePhoto(index),
+              onEarlier: index == 0 ? null : () => state.movePhoto(index, -1),
+              onLater: index == state.photos.length - 1
+                  ? null
+                  : () => state.movePhoto(index, 1),
+            ),
+        ],
+      ),
+      const SizedBox(height: 18),
+      Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 10,
+        runSpacing: 10,
+        children: [
+          OutlinedButton.icon(
+            onPressed: state.pickPhotos,
+            icon: const Icon(Icons.add_a_photo_outlined),
+            label: const Text('Add more'),
+          ),
+          FilledButton.icon(
+            onPressed: state.readPhotos,
+            icon: const Icon(Icons.auto_fix_high_outlined),
+            label: Text(
+              'Read ${state.photos.length} ${state.photos.length == 1 ? 'photo' : 'photos'}',
+            ),
+          ),
+        ],
+      ),
+      TextButton(onPressed: state.clearPhotos, child: const Text('Start over')),
+      PrivacyPill(compact: compact),
+    ],
+  );
+}
+
+class _PhotoTile extends StatelessWidget {
+  const _PhotoTile({
+    required this.photo,
+    required this.number,
+    required this.onRemove,
+    required this.onEarlier,
+    required this.onLater,
+  });
+  final ManualPhoto photo;
+  final int number;
+  final VoidCallback onRemove;
+  final VoidCallback? onEarlier;
+  final VoidCallback? onLater;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: 'Photo $number: ${photo.name}',
+    child: SizedBox(
+      width: 92,
+      child: Column(
+        children: [
+          SizedBox(
+            width: 92,
+            height: 96,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.memory(photo.bytes, fit: BoxFit.cover),
+                  ),
+                ),
+                Positioned(
+                  left: 6,
+                  top: 6,
+                  child: CircleAvatar(
+                    radius: 13,
+                    backgroundColor: DmxColors.amber,
+                    foregroundColor: DmxColors.inset,
+                    child: Text(
+                      '$number',
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  right: 2,
+                  top: 2,
+                  child: IconButton.filled(
+                    tooltip: 'Remove photo $number',
+                    onPressed: onRemove,
+                    icon: const Icon(Icons.close, size: 17),
+                    style: IconButton.styleFrom(
+                      minimumSize: const Size(34, 34),
+                      backgroundColor: const Color(0xcc151310),
+                      foregroundColor: DmxColors.text,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              IconButton(
+                tooltip: 'Move photo $number earlier',
+                onPressed: onEarlier,
+                icon: const Icon(Icons.arrow_back, size: 18),
+                visualDensity: VisualDensity.compact,
+              ),
+              IconButton(
+                tooltip: 'Move photo $number later',
+                onPressed: onLater,
+                icon: const Icon(Icons.arrow_forward, size: 18),
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 Future<({int page, Rect rect})?> _selectTableRegion(
