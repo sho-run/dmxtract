@@ -1,11 +1,8 @@
 # DMXtract
 
-Turn a lighting-fixture manual into an editable OFL or GDTF profile without uploading the manual. DMXtract is an MIT-licensed, beginner-first project by [sho.run](https://sho.run).
+Turn a lighting-fixture manual into an editable OFL or GDTF profile without uploading the manual. DMXtract is an MIT-licensed, beginner-first project.
 
-Canonical web app: [dmxtract.sho.run](https://dmxtract.sho.run)
-
-[Source code](https://github.com/sho-run/dmxtract) ·
-[Privacy](https://dmxtract.sho.run/privacy/)
+[Privacy and security](docs/security-and-privacy.md)
 
 The normal workflow is deliberately short:
 
@@ -45,9 +42,9 @@ cargo test --workspace
 cd apps/web && flutter analyze && flutter test
 ```
 
-The generated Rust/WASM bundle is checked in so Netlify does not need a Rust
-toolchain. `scripts/netlify-build.sh` verifies its source hash and fails rather
-than deploying a stale exporter. After changing `dmxtract_core`, run
+The generated Rust/WASM bundle is checked in so a static-site host does not need
+a Rust toolchain. `scripts/netlify-build.sh` verifies its source hash and fails
+rather than deploying a stale exporter. After changing `dmxtract_core`, run
 `./scripts/build-wasm.sh` before committing.
 
 ## Privacy and safety
@@ -56,8 +53,8 @@ Manuals and photos stay in the browser. The site has no analytics, document-uplo
 
 An optional same-origin fixture lookup can send only manufacturer, model, and
 mode footprints to a deployer-controlled API. It is disabled by default. To
-enable it on Netlify, set `DMXTRACT_FIXTURE_LOOKUP_URL` and optionally
-`DMXTRACT_FIXTURE_LOOKUP_TOKEN` in the host's encrypted environment settings;
+enable it, set `DMXTRACT_FIXTURE_LOOKUP_URL` and optionally
+`DMXTRACT_FIXTURE_LOOKUP_TOKEN` in the server-side host environment;
 never put live values in `.env.example`, Flutter build defines, or source code.
 The provider contract is documented in
 `schemas/fixture-lookup-v1.openapi.yaml`.
@@ -66,7 +63,4 @@ Treat generated profiles as drafts until they are checked on an isolated fixture
 
 Project-specific code and artwork in this repository were authored for
 DMXtract. No source, assets, schemas, credentials, or private fixture data from
-other sho.run products are bundled.
-
-Netlify and DNS setup for the canonical `dmxtract.sho.run` origin is recorded
-in `docs/netlify-deployment.md`.
+other products are bundled.

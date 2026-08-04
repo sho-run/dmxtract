@@ -14,8 +14,10 @@ const forbiddenText = [
   ['closed fixture-format identifier', ['ss', 'l2'].join('')],
   ['private product codename', ['show', 'up'].join('')],
   ['closed fixture-library vendor', ['scan', 'library'].join('')],
+  ['private deployment repository identifier', ['dmxtract', 'dot', 'sho', 'dot', 'run'].join('')],
 ];
 const forbiddenPath = ['design', '_system/'].join('');
+const privateDeploymentDocument = ['docs/netlify', '-deployment.md'].join('');
 const retiredAssetHashes = new Set([
   '268326e0e23dbb86c007b9e9247d26d4a587602c32fa26c88eca5a000d56cfee',
   '2b358aa933555f94c7cc00333763225c4025b5da3dea4c75b4f9e3692f3b59dd',
@@ -27,6 +29,9 @@ const failures = [];
 for (const relative of tracked) {
   if (relative.toLowerCase().startsWith(forbiddenPath)) {
     failures.push(`${relative}: retired private design reference path`);
+  }
+  if (relative.toLowerCase() === privateDeploymentDocument) {
+    failures.push(`${relative}: private deployment documentation path`);
   }
   const bytes = fs.readFileSync(path.join(repositoryRoot, relative));
   const text = bytes.toString('utf8').toLowerCase();
