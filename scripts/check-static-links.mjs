@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const publishRoot = resolve(process.argv[2] ?? join(repositoryRoot, "apps/web/build/web"));
-const pages = ["index.html", "privacy/index.html"];
+const pages = ["index.html", "about/index.html", "privacy/index.html"];
 const failures = [];
 
 for (const page of pages) {

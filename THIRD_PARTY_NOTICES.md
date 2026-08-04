@@ -6,6 +6,7 @@ their original licenses.
 | Resource | Use | License |
 | --- | --- | --- |
 | Nunito | Interface typeface | SIL Open Font License 1.1 |
+| Comfortaa | sho.run attribution wordmark | SIL Open Font License 1.1 |
 | JetBrains Mono | Technical values | SIL Open Font License 1.1 |
 | DSEG7 Classic | DMX and hardware readouts | SIL Open Font License 1.1 |
 | Material Symbols/Icons | Outlined interface icons | Apache License 2.0 |

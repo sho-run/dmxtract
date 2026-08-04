@@ -2,7 +2,9 @@
 
 Turn a lighting-fixture manual into an editable OFL or GDTF profile without uploading the manual. DMXtract is an MIT-licensed, beginner-first project.
 
-[Privacy and security](docs/security-and-privacy.md)
+[Privacy and security](docs/security-and-privacy.md) ·
+[Acknowledgments](ACKNOWLEDGMENTS.md) ·
+[Third-party notices](THIRD_PARTY_NOTICES.md)
 
 The normal workflow is deliberately short:
 
