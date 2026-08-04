@@ -39,5 +39,9 @@ flutter build web --release --base-href / \
 # Publish the canonical fixture schema at the stable URL embedded in projects.
 mkdir -p build/web/schemas
 cp "$repository_root/schemas/fixture-v1.json" build/web/schemas/fixture-v1.json
+# Flutter omits underscore-prefixed web files, so copy Netlify's static deploy
+# directives explicitly for manual drag-and-drop releases.
+cp web/_headers build/web/_headers
+cp web/_redirects build/web/_redirects
 node "$repository_root/scripts/check-static-links.mjs" build/web
 node "$repository_root/scripts/check-netlify-release.mjs" build/web

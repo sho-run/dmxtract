@@ -9,6 +9,8 @@ const failures = [];
 const requiredFiles = [
   "index.html",
   "privacy/index.html",
+  "_headers",
+  "_redirects",
   "flutter_bootstrap.js",
   "main.dart.js",
   "canvaskit/canvaskit.js",
@@ -38,6 +40,25 @@ if (existsSync(bootstrapPath)) {
   }
   if (!/fontFallbackBaseUrl\s*:\s*["']\/fonts\//.test(bootstrap)) {
     failures.push("flutter_bootstrap.js: font fallback is not pinned to the same origin");
+  }
+}
+
+const headersPath = join(publishRoot, "_headers");
+if (existsSync(headersPath)) {
+  const headers = readFileSync(headersPath, "utf8");
+  if (!headers.includes("Content-Security-Policy: default-src 'self'")) {
+    failures.push("_headers: same-origin content security policy is missing");
+  }
+  if (!headers.includes("connect-src 'self' http://127.0.0.1:46321 ws://127.0.0.1:46321")) {
+    failures.push("_headers: local bridge connections are not allowed");
+  }
+}
+
+const redirectsPath = join(publishRoot, "_redirects");
+if (existsSync(redirectsPath)) {
+  const redirects = readFileSync(redirectsPath, "utf8");
+  if (!/^\/\*\s+\/index\.html\s+200\s*$/m.test(redirects)) {
+    failures.push("_redirects: SPA fallback is missing");
   }
 }
 
