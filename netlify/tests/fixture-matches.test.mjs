@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import handler from "./fixture-matches.mjs";
+import handler from "../functions/fixture-matches.mjs";
 
 test("disabled lookup returns no matches without contacting a provider", async () => {
   globalThis.Netlify = { env: { get: () => undefined } };

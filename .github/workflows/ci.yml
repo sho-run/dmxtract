@@ -27,7 +27,7 @@ jobs:
         with:
           node-version: 22
       - run: node scripts/check-source-boundary.mjs
-      - run: node --test netlify/functions/fixture-matches.test.mjs
+      - run: node --test netlify/tests/fixture-matches.test.mjs
 
   flutter:
     runs-on: ubuntu-latest
