@@ -1,3 +1,4 @@
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 import 'app_state.dart';
@@ -13,55 +14,208 @@ class DmxScope extends InheritedNotifier<DmxtractState> {
       context.dependOnInheritedWidgetOfExactType<DmxScope>()!.notifier!;
 }
 
-class BeginnerPageShell extends StatelessWidget {
+class BeginnerPageShell extends StatefulWidget {
   const BeginnerPageShell({super.key, required this.child});
   final Widget child;
+
+  @override
+  State<BeginnerPageShell> createState() => _BeginnerPageShellState();
+}
+
+class _BeginnerPageShellState extends State<BeginnerPageShell> {
+  bool _manualHovering = false;
+
+  void _setManualHovering(bool value) {
+    if (_manualHovering == value || !mounted) return;
+    setState(() => _manualHovering = value);
+  }
+
+  Future<void> _ingestDrop(DropDoneDetails details, DmxtractState state) async {
+    _setManualHovering(false);
+    if (state.busy || state.step != 0 || details.files.isEmpty) return;
+
+    final file = details.files.first;
+    final bytes = await file.readAsBytes();
+    if (!mounted) return;
+    await state.ingest(
+      bytes,
+      file.name,
+      file.mimeType ?? _manualMime(file.name),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = DmxScope.of(context);
-    return DecoratedBox(
-      decoration: const BoxDecoration(
-        color: DmxColors.canvas,
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xff2b2520), DmxColors.canvas, Color(0xff1a1714)],
-          stops: [0, .48, 1],
-        ),
-      ),
-      child: Scaffold(
-        body: SafeArea(
-          child: SelectionArea(
-            child: Column(
-              children: [
-                _Header(state: state),
-                Expanded(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(24, 18, 24, 48),
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 1080),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          StepIndicator(
-                            step: state.step,
-                            onSelected: state.goTo,
+    final canDropManual = state.step == 0 && !state.busy;
+    if (!canDropManual && _manualHovering) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _setManualHovering(false);
+      });
+    }
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
+    final animationDuration = reduceMotion
+        ? Duration.zero
+        : const Duration(milliseconds: 180);
+
+    return DropTarget(
+      enable: canDropManual,
+      onDragEntered: (_) => _setManualHovering(true),
+      onDragExited: (_) => _setManualHovering(false),
+      onDragDone: (details) => _ingestDrop(details, state),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          DecoratedBox(
+            decoration: const BoxDecoration(
+              color: DmxColors.canvas,
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Color(0xff2b2520),
+                  DmxColors.canvas,
+                  Color(0xff1a1714),
+                ],
+                stops: [0, .48, 1],
+              ),
+            ),
+            child: Scaffold(
+              body: SafeArea(
+                child: SelectionArea(
+                  child: Column(
+                    children: [
+                      _Header(state: state),
+                      Expanded(
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(24, 18, 24, 48),
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 1080),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                StepIndicator(
+                                  step: state.step,
+                                  onSelected: state.goTo,
+                                ),
+                                const SizedBox(height: 32),
+                                widget.child,
+                              ],
+                            ),
                           ),
-                          const SizedBox(height: 32),
-                          child,
-                        ],
+                        ),
                       ),
-                    ),
+                      const _Footer(),
+                    ],
                   ),
                 ),
-                const _Footer(),
-              ],
+              ),
             ),
           ),
-        ),
+          IgnorePointer(
+            child: ExcludeSemantics(
+              excluding: !_manualHovering,
+              child: AnimatedOpacity(
+                opacity: _manualHovering ? 1 : 0,
+                duration: animationDuration,
+                curve: Curves.easeOutCubic,
+                child: AnimatedScale(
+                  scale: _manualHovering ? 1 : .985,
+                  duration: animationDuration,
+                  curve: Curves.easeOutCubic,
+                  child: const _ManualDropReadyOverlay(),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
+
+  String _manualMime(String name) {
+    final lower = name.toLowerCase();
+    if (lower.endsWith('.pdf')) return 'application/pdf';
+    if (lower.endsWith('.json')) return 'application/json';
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    return 'image/jpeg';
+  }
+}
+
+class _ManualDropReadyOverlay extends StatelessWidget {
+  const _ManualDropReadyOverlay();
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    liveRegion: true,
+    label: 'Drop to read this manual',
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        color: DmxColors.canvas.withValues(alpha: .82),
+        border: Border.all(color: DmxColors.amber, width: 3),
+        boxShadow: [
+          BoxShadow(
+            color: DmxColors.amber.withValues(alpha: .2),
+            blurRadius: 36,
+            spreadRadius: 4,
+          ),
+        ],
+      ),
+      child: Center(
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 520),
+          margin: const EdgeInsets.all(28),
+          padding: const EdgeInsets.symmetric(horizontal: 38, vertical: 34),
+          decoration: BoxDecoration(
+            color: DmxColors.ironRaised,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: DmxColors.rust, width: 2),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0xcc000000),
+                blurRadius: 24,
+                offset: Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  color: DmxColors.amber.withValues(alpha: .13),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: DmxColors.bezel),
+                ),
+                child: const Icon(
+                  Icons.file_download_outlined,
+                  size: 40,
+                  color: DmxColors.amber,
+                ),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Drop to read this manual',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.headlineMedium,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'PDF, screenshot, phone photo, or editable project',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 17, color: DmxColors.muted),
+              ),
+              const SizedBox(height: 20),
+              const PrivacyPill(),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class _Header extends StatelessWidget {
