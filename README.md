@@ -56,8 +56,11 @@ Manuals and photos stay in the browser. The site has no analytics, document-uplo
 An optional same-origin fixture lookup can send only manufacturer, model, and
 mode footprints to a deployer-controlled API. It is disabled by default. To
 enable it, set `DMXTRACT_FIXTURE_LOOKUP_URL` and optionally
-`DMXTRACT_FIXTURE_LOOKUP_TOKEN` in the server-side host environment;
-never put live values in `.env.example`, Flutter build defines, or source code.
+`DMXTRACT_FIXTURE_LOOKUP_TOKEN` in the server-side host environment,
+or set `GDTF_SHARE_USERNAME` and `GDTF_SHARE_PASSWORD` to use the GDTF Share
+Public API directly. The direct integration keeps its password and session
+cookie inside the server-side function and returns only sanitized matches.
+Never put live values in `.env.example`, Flutter build defines, or source code.
 The provider contract is documented in
 `schemas/fixture-lookup-v1.openapi.yaml`.
 

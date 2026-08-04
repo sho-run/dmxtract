@@ -86,7 +86,7 @@ class GdtfLookupClient {
                   .toList(),
             }),
           )
-          .timeout(const Duration(seconds: 6));
+          .timeout(const Duration(seconds: 12));
       if (response.statusCode != 200 ||
           !response.headers['content-type'].toString().contains(
             'application/json',
