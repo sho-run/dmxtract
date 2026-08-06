@@ -496,6 +496,29 @@ class PrivacyPill extends StatelessWidget {
   );
 }
 
+class BetaPill extends StatelessWidget {
+  const BetaPill({super.key});
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: const BoxDecoration(
+      color: Color(0x26e8a33d),
+      borderRadius: BorderRadius.all(Radius.circular(99)),
+      border: Border.fromBorderSide(BorderSide(color: Color(0x66e8a33d))),
+    ),
+    child: const Padding(
+      padding: EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+      child: Text(
+        'Beta',
+        style: TextStyle(
+          color: DmxColors.amber,
+          fontWeight: FontWeight.w800,
+          fontSize: 13,
+        ),
+      ),
+    ),
+  );
+}
+
 class ExplanationCallout extends StatelessWidget {
   const ExplanationCallout({
     super.key,
