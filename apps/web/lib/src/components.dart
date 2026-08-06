@@ -503,11 +503,16 @@ class ExplanationCallout extends StatelessWidget {
     required this.body,
     this.icon = Icons.lightbulb_outline,
     this.warning = false,
+    this.trailing,
   });
   final String title;
   final String body;
   final IconData icon;
   final bool warning;
+
+  /// Optional action shown at the end of the row (e.g. a `TextButton` to
+  /// revisit a choice this callout is explaining the consequence of).
+  final Widget? trailing;
   @override
   Widget build(BuildContext context) {
     final color = warning ? DmxColors.amber : DmxColors.bezel;
@@ -539,6 +544,7 @@ class ExplanationCallout extends StatelessWidget {
               ],
             ),
           ),
+          if (trailing != null) ...[const SizedBox(width: 8), trailing!],
         ],
       ),
     );

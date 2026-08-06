@@ -19,10 +19,44 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::time::interval;
+
+/// Idle self-exit is disabled unless a positive timeout is configured; see
+/// `main.rs` for CLI flag / env var parsing. 30 minutes matches a typical
+/// abandoned-tab scenario without cutting off a slow-paced fixture test.
+pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
+/// How often the idle watchdog re-evaluates state. Idle detection accuracy
+/// is bounded by this, not by the configured timeout.
+const IDLE_WATCHDOG_TICK: Duration = Duration::from_secs(5);
+/// A pending pairing request left unanswered this long is no longer
+/// actionable; the requesting page must ask again.
+const PAIRING_REQUEST_TTL: Duration = Duration::from_secs(10 * 60);
+/// An approved pairing request that is never claimed (the browser never
+/// polls `/status` again, or does so after this window) is discarded so it
+/// stops counting as pending pairing activity for idle self-exit.
+const PAIRING_APPROVED_TTL: Duration = Duration::from_secs(10 * 60);
+/// Token-bucket limit on `/v1/pair/request` per browser origin: burst up to
+/// this many requests, refilling at the same rate per minute.
+const PAIRING_RATE_LIMIT_CAPACITY: f64 = 5.0;
+const PAIRING_RATE_LIMIT_PER_MINUTE: f64 = 5.0;
+/// A bucket untouched this long has necessarily refilled to full capacity
+/// (elapsed * refill-rate >= capacity), so it carries no rate-limiting
+/// information beyond what `TokenBucket::full` already represents. Safe to
+/// drop rather than let it sit forever in `pairing_rate_limits`, which is
+/// keyed on a caller-supplied Origin header and so cannot rely on the same
+/// bounded cardinality as e.g. `pairs`.
+const PAIRING_RATE_LIMIT_IDLE_WINDOW: Duration = Duration::from_secs(
+    (PAIRING_RATE_LIMIT_CAPACITY / PAIRING_RATE_LIMIT_PER_MINUTE * 60.0) as u64,
+);
+/// Defensive cap for a sustained flood of distinct origins that never idles
+/// long enough for `PAIRING_RATE_LIMIT_IDLE_WINDOW` pruning to catch up.
+const PAIRING_RATE_LIMIT_MAX_ORIGINS: usize = 1000;
 
 pub struct BridgeState {
     control_token: String,
@@ -31,6 +65,14 @@ pub struct BridgeState {
     lease: Mutex<Option<Lease>>,
     output: Mutex<Option<Box<dyn OutputDriver>>>,
     frames: Mutex<HashMap<u16, [u8; 512]>>,
+    live_websockets: AtomicUsize,
+    /// Reset to now every tick the bridge is busy (lease, live WebSocket, or
+    /// pending pairing activity). While idle, it marks when the idle window
+    /// started, so the watchdog can compare against `idle_timeout`.
+    last_activity: Mutex<Instant>,
+    /// `None` disables idle self-exit.
+    idle_timeout: Option<Duration>,
+    pairing_rate_limits: Mutex<HashMap<String, TokenBucket>>,
 }
 struct PendingPair {
     origin: String,
@@ -54,8 +96,75 @@ struct Lease {
     safety_unlocked: bool,
 }
 
+/// Continuous token-bucket limiter. Refills smoothly rather than in fixed
+/// windows so a burst right at a minute boundary can't double the effective
+/// rate.
+struct TokenBucket {
+    tokens: f64,
+    updated: Instant,
+}
+impl TokenBucket {
+    fn full() -> Self {
+        Self {
+            tokens: PAIRING_RATE_LIMIT_CAPACITY,
+            updated: Instant::now(),
+        }
+    }
+    /// Returns true and consumes one token if the bucket has capacity.
+    fn allow(&mut self) -> bool {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.updated).as_secs_f64();
+        self.updated = now;
+        let refill_per_sec = PAIRING_RATE_LIMIT_PER_MINUTE / 60.0;
+        self.tokens = (self.tokens + elapsed * refill_per_sec).min(PAIRING_RATE_LIMIT_CAPACITY);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Drops pairing requests that are past their TTL for whichever state
+/// they're in (see `PAIRING_REQUEST_TTL` / `PAIRING_APPROVED_TTL`). Approval
+/// resets `expires`, so this single field carries the right deadline for
+/// both phases.
+fn prune_expired_pairs(pairs: &mut HashMap<String, PendingPair>) {
+    let now = Instant::now();
+    pairs.retain(|_, pair| pair.expires >= now);
+}
+
+/// Bounds `pairing_rate_limits`, which — unlike `pairs` — is keyed on a
+/// caller-supplied Origin header a non-browser client fully controls, so it
+/// has no natural cardinality limit. First drops buckets idle long enough to
+/// have implicitly refilled (see `PAIRING_RATE_LIMIT_IDLE_WINDOW`), then, if
+/// a sustained flood of distinct origins outpaces that, evicts the
+/// least-recently-touched entries down to `PAIRING_RATE_LIMIT_MAX_ORIGINS`.
+fn prune_stale_rate_limits(limits: &mut HashMap<String, TokenBucket>) {
+    let now = Instant::now();
+    limits.retain(|_, bucket| now.duration_since(bucket.updated) < PAIRING_RATE_LIMIT_IDLE_WINDOW);
+    if limits.len() > PAIRING_RATE_LIMIT_MAX_ORIGINS {
+        let mut by_age: Vec<(String, Instant)> = limits
+            .iter()
+            .map(|(origin, bucket)| (origin.clone(), bucket.updated))
+            .collect();
+        by_age.sort_by_key(|(_, updated)| *updated);
+        for (origin, _) in by_age
+            .into_iter()
+            .take(limits.len() - PAIRING_RATE_LIMIT_MAX_ORIGINS)
+        {
+            limits.remove(&origin);
+        }
+    }
+}
+
 impl BridgeState {
+    #[cfg(test)]
     pub fn new() -> Self {
+        Self::with_idle_timeout(Some(Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS)))
+    }
+    pub fn with_idle_timeout(idle_timeout: Option<Duration>) -> Self {
         Self {
             control_token: random_token(24),
             pairs: Mutex::new(HashMap::new()),
@@ -63,6 +172,10 @@ impl BridgeState {
             lease: Mutex::new(None),
             output: Mutex::new(None),
             frames: Mutex::new(HashMap::new()),
+            live_websockets: AtomicUsize::new(0),
+            last_activity: Mutex::new(Instant::now()),
+            idle_timeout,
+            pairing_rate_limits: Mutex::new(HashMap::new()),
         }
     }
     pub fn start_watchdog(self: Arc<Self>) {
@@ -83,6 +196,54 @@ impl BridgeState {
                 }
             }
         });
+    }
+    /// Spawns the idle self-exit watchdog; a no-op if idle timeout is 0
+    /// (disabled). Runs for the life of the process, so it is not meant to
+    /// be joined.
+    pub fn start_idle_watchdog(self: Arc<Self>) {
+        let Some(timeout) = self.idle_timeout else {
+            tracing::info!("idle self-exit disabled");
+            return;
+        };
+        tracing::info!(?timeout, "idle self-exit armed");
+        tokio::spawn(async move {
+            let mut timer = interval(IDLE_WATCHDOG_TICK);
+            loop {
+                timer.tick().await;
+                if self.idle_tick(timeout) {
+                    tracing::info!(
+                        "bridge idle with no lease, live WebSocket, or pending pairing activity; exiting"
+                    );
+                    std::process::exit(0);
+                }
+            }
+        });
+    }
+    /// True when nothing is keeping the process alive: no output lease, no
+    /// open WebSocket, and no pairing request still pending approval or
+    /// awaiting a token claim.
+    fn is_idle(&self) -> bool {
+        if self.lease.lock().expect("lease lock").is_some() {
+            return false;
+        }
+        if self.live_websockets.load(Ordering::SeqCst) > 0 {
+            return false;
+        }
+        let mut pairs = self.pairs.lock().expect("pair lock");
+        prune_expired_pairs(&mut pairs);
+        pairs.is_empty()
+    }
+    /// Pure decision step, separated from the async loop/`process::exit` so
+    /// it can be driven deterministically in tests. Returns true once the
+    /// process should exit; otherwise it resets the idle clock whenever the
+    /// bridge is busy.
+    fn idle_tick(&self, timeout: Duration) -> bool {
+        if self.is_idle() {
+            self.last_activity.lock().expect("activity lock").elapsed() >= timeout
+        } else {
+            *self.last_activity.lock().expect("activity lock") = Instant::now();
+            false
+        }
     }
     fn blackout(&self, terminated: bool) {
         let universes: Vec<u16> = self
@@ -275,18 +436,26 @@ async fn pair_status(
     require_matching_origin(&headers, &pair.origin)?;
     if pair.expires < Instant::now() {
         pairs.remove(&request_id);
-        return Err(ApiError::bad("That pairing request expired."));
+        // A clear, pollable status rather than an error: the requesting
+        // page asked in time, the window just closed. Ask again.
+        return Ok(Json(
+            json!({ "status": "expired", "message": "That pairing request expired. Ask again." }),
+        ));
     }
-    match &pair.decision {
-        PairDecision::Pending => Ok(Json(json!({ "status": "pending" }))),
-        PairDecision::Denied => Ok(Json(json!({ "status": "denied" }))),
+    let response = match &pair.decision {
+        PairDecision::Pending => return Ok(Json(json!({ "status": "pending" }))),
+        PairDecision::Denied => json!({ "status": "denied" }),
         PairDecision::Approved(token) => {
-            let token = token.clone();
-            Ok(Json(
-                json!({ "status": "approved", "token": token, "expiresWhenBridgeExits": true }),
-            ))
+            json!({ "status": "approved", "token": token, "expiresWhenBridgeExits": true })
         }
-    }
+    };
+    // A denial or an approval token is single-serve: once this poll has
+    // delivered it, the entry no longer counts as pending pairing activity
+    // for idle self-exit, and a replayed poll (stale network retry, a
+    // second inspector) gets "no longer available" instead of the bearer
+    // token again.
+    pairs.remove(&request_id);
+    Ok(Json(response))
 }
 
 async fn pair_approve(
@@ -300,6 +469,7 @@ async fn pair_approve(
         .get_mut(&request_id)
         .ok_or_else(|| ApiError::bad("That pairing request is no longer available."))?;
     if pair.expires < Instant::now() {
+        pairs.remove(&request_id);
         return Err(ApiError::bad("That pairing request expired."));
     }
     let token = random_token(32);
@@ -311,6 +481,10 @@ async fn pair_approve(
         },
     );
     pair.decision = PairDecision::Approved(token);
+    // Give the browser a fresh window to poll for and claim the token,
+    // independent of how long the original request sat waiting for a human
+    // to click Allow.
+    pair.expires = Instant::now() + PAIRING_APPROVED_TTL;
     Ok(local_html(message_page(
         "Access allowed",
         "Return to DMXtract. It will finish connecting automatically.",
@@ -431,24 +605,51 @@ async fn pair_request(
         ));
     }
     require_matching_origin(&headers, &request.origin)?;
+    {
+        let mut limits = state.pairing_rate_limits.lock().expect("rate limit lock");
+        prune_stale_rate_limits(&mut limits);
+        let bucket = limits
+            .entry(request.origin.clone())
+            .or_insert_with(TokenBucket::full);
+        if !bucket.allow() {
+            return Err(ApiError::rate_limited(
+                "Too many pairing requests from this site. Wait a moment and try again.",
+            ));
+        }
+    }
     let request_id = random_token(18);
     let code = format!("{:06}", rand::random::<u32>() % 1_000_000);
-    state.pairs.lock().unwrap().insert(
+    let mut pairs = state.pairs.lock().unwrap();
+    prune_expired_pairs(&mut pairs);
+    // Superseded: at most one unanswered request per origin should ever be
+    // shown on the controls page. Without this, retrying a pair (Cancel,
+    // then Connect again) leaves an old card behind; approving it approves
+    // the wrong `request_id` and the browser polling the new one hangs
+    // forever. Approved/denied entries are left alone — they're already
+    // resolved and the browser may still be polling to claim the token.
+    pairs.retain(|_, pair| {
+        !(pair.origin == request.origin && matches!(pair.decision, PairDecision::Pending))
+    });
+    pairs.insert(
         request_id.clone(),
         PendingPair {
             origin: request.origin.clone(),
             code: code.clone(),
-            expires: Instant::now() + Duration::from_secs(120),
+            expires: Instant::now() + PAIRING_REQUEST_TTL,
             decision: PairDecision::Pending,
         },
     );
+    drop(pairs);
     // The pairing code must be visible for terminal builds. Do not print the
     // requesting origin or attach the code to structured logs.
     eprintln!("DMXTRACT_PAIRING\t{}", code);
     tracing::warn!("pairing requested; confirm the code shown in the bridge");
-    Ok(Json(
-        json!({ "requestId": request_id, "expiresInSeconds": 120, "controlsUrl": "http://127.0.0.1:46321/", "message": "Approve the requesting site in the visible Bridge controls." }),
-    ))
+    Ok(Json(json!({
+        "requestId": request_id,
+        "expiresInSeconds": PAIRING_REQUEST_TTL.as_secs(),
+        "controlsUrl": "http://127.0.0.1:46321/",
+        "message": "Approve the requesting site in the visible Bridge controls.",
+    })))
 }
 
 #[derive(Deserialize)]
@@ -641,12 +842,24 @@ async fn websocket(
         .on_upgrade(move |socket| websocket_session(socket, state, lease_id, query.token))
         .into_response())
 }
+/// Decrements the live-WebSocket count on every exit path (normal close,
+/// client disconnect, or panic) so idle self-exit never stalls on a socket
+/// that hung up without a clean `Message::Close`.
+struct LiveWebSocketGuard<'a>(&'a BridgeState);
+impl Drop for LiveWebSocketGuard<'_> {
+    fn drop(&mut self) {
+        self.0.live_websockets.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 async fn websocket_session(
     socket: WebSocket,
     state: Arc<BridgeState>,
     lease_id: String,
     token: String,
 ) {
+    state.live_websockets.fetch_add(1, Ordering::SeqCst);
+    let _guard = LiveWebSocketGuard(&state);
     let (mut sender, mut receiver) = socket.split();
     while let Some(Ok(message)) = receiver.next().await {
         let result = match message {
@@ -806,6 +1019,12 @@ impl ApiError {
             message: message.to_owned(),
         }
     }
+    fn rate_limited(message: &str) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: message.to_owned(),
+        }
+    }
 }
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -906,5 +1125,423 @@ mod tests {
                 .as_str()
                 .is_some_and(|token| !token.is_empty())
         );
+    }
+
+    #[tokio::test]
+    async fn a_new_pair_request_supersedes_a_stale_pending_one_from_the_same_origin() {
+        let state = Arc::new(BridgeState::new());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "origin",
+            HeaderValue::from_static("https://dmxtract.sho.run"),
+        );
+
+        let Json(first) = pair_request(
+            State(state.clone()),
+            headers.clone(),
+            Json(PairRequest {
+                origin: "https://dmxtract.sho.run".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        let first_id = first["requestId"].as_str().unwrap().to_owned();
+
+        let Json(second) = pair_request(
+            State(state.clone()),
+            headers.clone(),
+            Json(PairRequest {
+                origin: "https://dmxtract.sho.run".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        let second_id = second["requestId"].as_str().unwrap().to_owned();
+
+        // The stale first card is gone rather than sitting alongside the new
+        // one; approving it would otherwise hang a browser polling the
+        // second request forever.
+        {
+            let pairs = state.pairs.lock().unwrap();
+            assert!(!pairs.contains_key(&first_id));
+            assert!(pairs.contains_key(&second_id));
+            assert_eq!(pairs.len(), 1);
+        }
+
+        // An already-approved request for the same origin is left alone —
+        // the browser may still be polling to claim its token.
+        state.pairs.lock().unwrap().insert(
+            "approved-request".to_owned(),
+            PendingPair {
+                origin: "https://dmxtract.sho.run".to_owned(),
+                code: "123456".to_owned(),
+                expires: Instant::now() + Duration::from_secs(120),
+                decision: PairDecision::Approved("some-token".to_owned()),
+            },
+        );
+        let _ = pair_request(
+            State(state.clone()),
+            headers,
+            Json(PairRequest {
+                origin: "https://dmxtract.sho.run".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(state.pairs.lock().unwrap().contains_key("approved-request"));
+    }
+
+    // --- Idle self-exit -----------------------------------------------
+
+    #[test]
+    fn idle_tick_stays_alive_while_a_lease_is_active() {
+        let state = BridgeState::with_idle_timeout(Some(Duration::from_millis(20)));
+        *state.lease.lock().unwrap() = Some(Lease {
+            id: "lease".to_owned(),
+            token: "token".to_owned(),
+            last_seen: Instant::now(),
+            safety_unlocked: false,
+        });
+        assert!(!state.idle_tick(Duration::from_millis(20)));
+        std::thread::sleep(Duration::from_millis(30));
+        // A live lease keeps resetting the idle clock every tick, so it
+        // never crosses the timeout no matter how long it holds the lease.
+        assert!(!state.idle_tick(Duration::from_millis(20)));
+    }
+
+    #[test]
+    fn idle_tick_stays_alive_with_a_live_websocket() {
+        let state = BridgeState::with_idle_timeout(Some(Duration::from_millis(20)));
+        state.live_websockets.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!state.idle_tick(Duration::from_millis(20)));
+    }
+
+    #[test]
+    fn idle_tick_stays_alive_with_a_pending_pairing_request() {
+        let state = BridgeState::with_idle_timeout(Some(Duration::from_millis(20)));
+        state.pairs.lock().unwrap().insert(
+            "request".to_owned(),
+            PendingPair {
+                origin: "https://dmxtract.sho.run".to_owned(),
+                code: "123456".to_owned(),
+                expires: Instant::now() + Duration::from_secs(120),
+                decision: PairDecision::Pending,
+            },
+        );
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!state.idle_tick(Duration::from_millis(20)));
+    }
+
+    #[test]
+    fn idle_tick_exits_once_truly_idle_past_the_timeout() {
+        let state = BridgeState::with_idle_timeout(Some(Duration::from_millis(20)));
+        // First tick with nothing active starts the idle clock.
+        assert!(!state.idle_tick(Duration::from_millis(20)));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(state.idle_tick(Duration::from_millis(20)));
+    }
+
+    #[test]
+    fn idle_tick_ignores_an_already_expired_pairing_entry() {
+        let state = BridgeState::with_idle_timeout(Some(Duration::from_millis(20)));
+        state.pairs.lock().unwrap().insert(
+            "stale".to_owned(),
+            PendingPair {
+                origin: "https://dmxtract.sho.run".to_owned(),
+                code: "123456".to_owned(),
+                expires: Instant::now() - Duration::from_secs(1),
+                decision: PairDecision::Pending,
+            },
+        );
+        assert!(!state.idle_tick(Duration::from_millis(20)));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(state.idle_tick(Duration::from_millis(20)));
+        assert!(state.pairs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn start_idle_watchdog_is_a_no_op_when_timeout_is_disabled() {
+        let state = Arc::new(BridgeState::with_idle_timeout(None));
+        // Must not panic or spawn a watchdog that later calls process::exit;
+        // there's no async runtime driving anything here, so a spawned task
+        // would simply never run - this only asserts the early return path.
+        state.start_idle_watchdog();
+    }
+
+    // --- Pairing TTLs ---------------------------------------------------
+
+    #[test]
+    fn prune_expired_pairs_removes_only_stale_entries() {
+        let mut pairs = HashMap::new();
+        pairs.insert(
+            "fresh".to_owned(),
+            PendingPair {
+                origin: "https://dmxtract.sho.run".to_owned(),
+                code: "111111".to_owned(),
+                expires: Instant::now() + Duration::from_secs(60),
+                decision: PairDecision::Pending,
+            },
+        );
+        pairs.insert(
+            "stale".to_owned(),
+            PendingPair {
+                origin: "https://dmxtract.sho.run".to_owned(),
+                code: "222222".to_owned(),
+                expires: Instant::now() - Duration::from_secs(1),
+                decision: PairDecision::Pending,
+            },
+        );
+        prune_expired_pairs(&mut pairs);
+        assert!(pairs.contains_key("fresh"));
+        assert!(!pairs.contains_key("stale"));
+    }
+
+    #[tokio::test]
+    async fn polling_an_expired_pairing_request_returns_a_clear_expired_status() {
+        let state = Arc::new(BridgeState::new());
+        state.pairs.lock().unwrap().insert(
+            "request".to_owned(),
+            PendingPair {
+                origin: "https://dmxtract.sho.run".to_owned(),
+                code: "123456".to_owned(),
+                expires: Instant::now() - Duration::from_secs(1),
+                decision: PairDecision::Pending,
+            },
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "origin",
+            HeaderValue::from_static("https://dmxtract.sho.run"),
+        );
+        let Json(status) = pair_status(State(state.clone()), Path("request".to_owned()), headers)
+            .await
+            .expect("expired status is a 200, not an error");
+        assert_eq!(status["status"], "expired");
+        assert!(state.pairs.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn approving_a_pairing_request_grants_a_fresh_claim_window() {
+        let state = Arc::new(BridgeState::new());
+        // About to expire from the requester's perspective, but the human
+        // clicking Allow right now should still get a full claim window.
+        state.pairs.lock().unwrap().insert(
+            "request".to_owned(),
+            PendingPair {
+                origin: "https://dmxtract.sho.run".to_owned(),
+                code: "123456".to_owned(),
+                expires: Instant::now() + Duration::from_millis(5),
+                decision: PairDecision::Pending,
+            },
+        );
+        pair_approve(
+            State(state.clone()),
+            Path("request".to_owned()),
+            Form(ControlAction {
+                control_token: state.control_token.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        let pairs = state.pairs.lock().unwrap();
+        let pair = pairs.get("request").expect("still present after approval");
+        assert!(pair.expires.saturating_duration_since(Instant::now()) > Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn polling_an_approved_pairing_request_removes_it_after_one_claim() {
+        let state = Arc::new(BridgeState::new());
+        state.pairs.lock().unwrap().insert(
+            "request".to_owned(),
+            PendingPair {
+                origin: "https://dmxtract.sho.run".to_owned(),
+                code: "123456".to_owned(),
+                expires: Instant::now() + Duration::from_secs(120),
+                decision: PairDecision::Approved("the-bearer-token".to_owned()),
+            },
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "origin",
+            HeaderValue::from_static("https://dmxtract.sho.run"),
+        );
+
+        let Json(first) = pair_status(
+            State(state.clone()),
+            Path("request".to_owned()),
+            headers.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first["status"], "approved");
+        assert_eq!(first["token"], "the-bearer-token");
+        // Claimed: no longer pending pairing activity, so idle self-exit can
+        // proceed once nothing else is keeping the bridge busy.
+        assert!(state.pairs.lock().unwrap().is_empty());
+
+        let second = pair_status(State(state), Path("request".to_owned()), headers).await;
+        assert_eq!(second.unwrap_err().status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn polling_a_denied_pairing_request_removes_it_after_delivery() {
+        let state = Arc::new(BridgeState::new());
+        state.pairs.lock().unwrap().insert(
+            "request".to_owned(),
+            PendingPair {
+                origin: "https://dmxtract.sho.run".to_owned(),
+                code: "123456".to_owned(),
+                expires: Instant::now() + Duration::from_secs(120),
+                decision: PairDecision::Denied,
+            },
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "origin",
+            HeaderValue::from_static("https://dmxtract.sho.run"),
+        );
+
+        let Json(first) = pair_status(
+            State(state.clone()),
+            Path("request".to_owned()),
+            headers.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first["status"], "denied");
+        assert!(state.pairs.lock().unwrap().is_empty());
+
+        let second = pair_status(State(state), Path("request".to_owned()), headers).await;
+        assert_eq!(second.unwrap_err().status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn idle_tick_goes_idle_once_an_approved_pair_has_been_claimed() {
+        // Regression guard for the removal-on-claim fix above: an approved
+        // pair that pair_status has already delivered must not linger in
+        // `pairs` counting as pending pairing activity and blocking idle
+        // self-exit.
+        let state = Arc::new(BridgeState::with_idle_timeout(Some(Duration::from_millis(
+            20,
+        ))));
+        state.pairs.lock().unwrap().insert(
+            "request".to_owned(),
+            PendingPair {
+                origin: "https://dmxtract.sho.run".to_owned(),
+                code: "123456".to_owned(),
+                expires: Instant::now() + Duration::from_secs(120),
+                decision: PairDecision::Approved("the-bearer-token".to_owned()),
+            },
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "origin",
+            HeaderValue::from_static("https://dmxtract.sho.run"),
+        );
+        // Still pending activity before the browser claims it.
+        assert!(!state.idle_tick(Duration::from_millis(20)));
+
+        let _ = pair_status(State(state.clone()), Path("request".to_owned()), headers)
+            .await
+            .unwrap();
+
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(state.idle_tick(Duration::from_millis(20)));
+    }
+
+    // --- Pairing rate limiting -------------------------------------------
+
+    #[test]
+    fn token_bucket_allows_bursts_up_to_capacity_then_blocks() {
+        let mut bucket = TokenBucket::full();
+        for _ in 0..PAIRING_RATE_LIMIT_CAPACITY as usize {
+            assert!(bucket.allow());
+        }
+        assert!(!bucket.allow());
+    }
+
+    #[tokio::test]
+    async fn pair_request_rate_limits_a_hostile_origin() {
+        let state = Arc::new(BridgeState::new());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "origin",
+            HeaderValue::from_static("https://dmxtract.sho.run"),
+        );
+        for _ in 0..PAIRING_RATE_LIMIT_CAPACITY as usize {
+            let _ = pair_request(
+                State(state.clone()),
+                headers.clone(),
+                Json(PairRequest {
+                    origin: "https://dmxtract.sho.run".to_owned(),
+                }),
+            )
+            .await
+            .expect("within burst capacity");
+        }
+        let limited = pair_request(
+            State(state.clone()),
+            headers.clone(),
+            Json(PairRequest {
+                origin: "https://dmxtract.sho.run".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(limited.unwrap_err().status, StatusCode::TOO_MANY_REQUESTS);
+
+        // A different origin has its own bucket and is unaffected.
+        let mut other_headers = HeaderMap::new();
+        other_headers.insert("origin", HeaderValue::from_static("https://other.example"));
+        let _ = pair_request(
+            State(state),
+            other_headers,
+            Json(PairRequest {
+                origin: "https://other.example".to_owned(),
+            }),
+        )
+        .await
+        .expect("a fresh origin is not affected by another origin's limit");
+    }
+
+    #[test]
+    fn prune_stale_rate_limits_evicts_only_buckets_idle_past_the_refill_window() {
+        let mut limits = HashMap::new();
+        limits.insert(
+            "https://stale.example".to_owned(),
+            TokenBucket {
+                tokens: 1.0,
+                updated: Instant::now() - PAIRING_RATE_LIMIT_IDLE_WINDOW - Duration::from_secs(1),
+            },
+        );
+        limits.insert(
+            "https://fresh.example".to_owned(),
+            TokenBucket {
+                tokens: 1.0,
+                updated: Instant::now(),
+            },
+        );
+        prune_stale_rate_limits(&mut limits);
+        assert!(!limits.contains_key("https://stale.example"));
+        assert!(limits.contains_key("https://fresh.example"));
+    }
+
+    #[test]
+    fn prune_stale_rate_limits_caps_size_under_a_sustained_flood() {
+        let mut limits = HashMap::new();
+        // Every bucket is fresh (never idle), so only the size cap — not the
+        // idle-window sweep — can bound this: a hostile local process that
+        // never reuses an Origin would otherwise grow this map forever.
+        for i in 0..(PAIRING_RATE_LIMIT_MAX_ORIGINS + 50) {
+            limits.insert(
+                format!("https://flood-{i}.example"),
+                TokenBucket {
+                    tokens: 1.0,
+                    updated: Instant::now(),
+                },
+            );
+        }
+        prune_stale_rate_limits(&mut limits);
+        assert_eq!(limits.len(), PAIRING_RATE_LIMIT_MAX_ORIGINS);
     }
 }

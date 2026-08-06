@@ -21,7 +21,7 @@ class ArtNetNode {
   );
 }
 
-enum PairApprovalStatus { pending, approved, denied }
+enum PairApprovalStatus { pending, approved, denied, expired }
 
 class BridgeClient {
   BridgeClient({this.baseUrl = 'http://127.0.0.1:46321', http.Client? client})
@@ -87,6 +87,12 @@ class BridgeClient {
         return PairApprovalStatus.approved;
       case 'denied':
         return PairApprovalStatus.denied;
+      case 'expired':
+        // api.rs `pair_status` returns this exactly once (200, not an
+        // error) then removes the pairing record, so the *next* poll would
+        // otherwise 400 with a less specific "no longer available" — map
+        // it explicitly rather than letting it fall into `pending`.
+        return PairApprovalStatus.expired;
       default:
         return PairApprovalStatus.pending;
     }
@@ -148,6 +154,16 @@ class BridgeClient {
       body: jsonEncode(body),
     );
     final decoded = jsonDecode(response.body) as Map<String, Object?>;
+    if (response.statusCode == 401) {
+      // The bridge's idle watchdog can self-exit (`std::process::exit(0)`
+      // in api.rs) between requests, which destroys every in-memory
+      // session — including the 12-hour token this client is holding. That
+      // token is now permanently dead until the user re-pairs; clear it so
+      // callers fall back to the pairing flow instead of retrying the same
+      // 401 forever.
+      token = null;
+      leaseId = null;
+    }
     if (response.statusCode >= 400) {
       throw Exception(decoded['error'] ?? 'Bridge request failed');
     }

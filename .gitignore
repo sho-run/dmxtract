@@ -16,3 +16,4 @@ apps/bridge/src-tauri/gen/schemas/
 *.log
 testcorpus/*.pdf
 tmp/
+node_modules/

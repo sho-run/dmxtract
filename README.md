@@ -13,7 +13,7 @@ The normal workflow is deliberately short:
 3. Test your light
 4. Download profile
 
-The current vertical slice includes local PDF.js/Tesseract extraction, table-region recovery, IndexedDB autosave, an editable canonical fixture model, Rust/WASM validation and exporters, and a guided tester with fixture-address offsets, expected observations, correction/retest editing, and automatic Art-Net node discovery. Its loopback hardware bridge supports Art-Net, sACN, Open DMX/FTDI, and preview output. The bridge also exposes stdio MCP fixture tools and approval-gated hardware tools.
+The current vertical slice includes local PDF.js/Tesseract extraction, table-region recovery, IndexedDB autosave, an editable canonical fixture model, Rust/WASM validation and exporters, and a guided tester with fixture-address offsets, expected observations, correction/retest editing, and automatic Art-Net node discovery. A loopback hardware bridge is the path to real DMX output on an Art-Net/sACN network node or a browser without Web Serial support; it also exposes stdio MCP fixture tools and approval-gated hardware tools.
 
 ## Repository layout
 

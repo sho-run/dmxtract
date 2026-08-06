@@ -36,6 +36,7 @@ paths:
   /pair/request:
     post:
       operationId: requestPairing
+      description: Rate-limited per browser origin (token bucket, burst 5, refills at 5/minute).
       requestBody:
         required: true
         content:
@@ -46,7 +47,8 @@ paths:
               properties:
                 origin: { type: string, format: uri }
       responses:
-        "200": { description: Native approval request created }
+        "200": { description: "Native approval request created; expiresInSeconds is the pending-request TTL (600)" }
+        "429": { description: Too many pairing requests from this origin }
   /pair/confirm:
     post:
       operationId: confirmPairing
@@ -66,10 +68,27 @@ paths:
   /pair/{requestId}/status:
     get:
       operationId: pairingStatus
-      description: Polled by the exact requesting origin after the user acts in the local Bridge controls.
+      description: >-
+        Polled by the exact requesting origin after the user acts in the local
+        Bridge controls. A pending request expires 10 minutes after creation;
+        an approved request expires 10 minutes after approval if never
+        claimed. Expiry is reported as a status, not an error.
       parameters: [{ $ref: "#/components/parameters/requestId" }]
       responses:
-        "200": { description: Pending, approved, or denied status; an approval includes the origin-bound bearer token }
+        "200":
+          description: Pending, approved, denied, or expired status; an approval includes the origin-bound bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [pending, approved, denied, expired]
+                  token: { type: string }
+                  expiresWhenBridgeExits: { type: boolean }
+                  message: { type: string }
         "401": { description: Browser origin does not match the pairing request }
   /pair/{requestId}/approve:
     post:

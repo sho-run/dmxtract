@@ -54,7 +54,18 @@ fn main() {
                 })
                 .build(app)?;
 
-            let sidecar = app.shell().sidecar("dmxtract_bridge")?;
+            // The tray icon is the thing meant to keep a forgotten session
+            // from lingering (see README.md) — the sidecar's own idle
+            // watchdog (api.rs `start_idle_watchdog`) has no way to tell the
+            // tray shell it exited, so it would otherwise self-exit under a
+            // tray icon that still claims to be ready, with no restart and
+            // no menu item to recover short of Quit-and-relaunch. Disable
+            // the sidecar's self-exit here and let Quit be the only way to
+            // stop it while this app is running.
+            let sidecar = app
+                .shell()
+                .sidecar("dmxtract_bridge")?
+                .args(["--idle-timeout=0"]);
             let (mut events, process) = sidecar.spawn()?;
             app.manage(BridgeProcess(Mutex::new(Some(process))));
 
