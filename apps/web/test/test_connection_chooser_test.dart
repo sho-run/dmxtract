@@ -66,6 +66,7 @@ void main() {
       await pumpTestStep(tester);
 
       expect(find.text('How is your light connected?'), findsOneWidget);
+      expect(find.text('Beta'), findsOneWidget);
       expect(find.text('USB DMX cable or dongle'), findsOneWidget);
       expect(find.text('Network node (Art-Net / sACN)'), findsOneWidget);
       expect(find.text('My own lighting software or console'), findsOneWidget);

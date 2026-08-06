@@ -212,14 +212,23 @@ class _ConnectionChooserState extends State<_ConnectionChooser> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'How is your light connected?',
-          style: Theme.of(context).textTheme.titleLarge,
+        Wrap(
+          spacing: 10,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text(
+              'How is your light connected?',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const BetaPill(),
+          ],
         ),
         const SizedBox(height: 4),
         const Text(
-          'What DMXtract never asks for: an account, notifications, or '
-          'anything installed for USB testing.',
+          'Light testing is new and still being proven against real rigs — '
+          'if something misbehaves, please open a GitHub issue. What DMXtract '
+          'never asks for: an account, notifications, or anything installed '
+          'for USB testing.',
           style: TextStyle(color: DmxColors.muted, fontSize: 13),
         ),
         const SizedBox(height: 14),
