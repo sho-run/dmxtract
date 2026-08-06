@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:qr/qr.dart';
 import '../app_state.dart';
 import '../components.dart';
 import '../deployment_theme.dart';
+import '../phone_link.dart';
 import '../theme.dart';
 
 class AddManualScreen extends StatelessWidget {
@@ -102,6 +106,14 @@ class AddManualScreen extends StatelessWidget {
                               icon: const Icon(Icons.picture_as_pdf_outlined),
                               label: const Text('Choose PDF or project'),
                             ),
+                            if (state.phoneLinkAvailable) ...[
+                              const SizedBox(height: 10),
+                              OutlinedButton.icon(
+                                onPressed: () => _showPhoneLinkDialog(context),
+                                icon: const Icon(Icons.qr_code_2_outlined),
+                                label: const Text('Send from phone'),
+                              ),
+                            ],
                           ] else
                             Wrap(
                               alignment: WrapAlignment.center,
@@ -118,6 +130,13 @@ class AddManualScreen extends StatelessWidget {
                                   icon: const Icon(Icons.add_a_photo_outlined),
                                   label: const Text('Add several photos'),
                                 ),
+                                if (state.phoneLinkAvailable)
+                                  OutlinedButton.icon(
+                                    onPressed: () =>
+                                        _showPhoneLinkDialog(context),
+                                    icon: const Icon(Icons.qr_code_2_outlined),
+                                    label: const Text('Send from phone'),
+                                  ),
                               ],
                             ),
                           SizedBox(height: compact ? 14 : 18),
@@ -554,4 +573,195 @@ class _Stage extends StatelessWidget {
       Text(label, style: const TextStyle(color: DmxColors.muted)),
     ],
   );
+}
+
+void _showPhoneLinkDialog(BuildContext context) => showDialog<void>(
+  context: context,
+  builder: (context) => const _PhoneLinkDialog(),
+);
+
+/// Shows the QR code that starts a phone hand-off, and tracks it through to
+/// completion. The session (and the RTCPeerConnection it drives in
+/// web/phone_link.js) is torn down in [dispose], whether the user closes
+/// this dialog, cancels, or the whole hand-off already finished.
+class _PhoneLinkDialog extends StatefulWidget {
+  const _PhoneLinkDialog();
+  @override
+  State<_PhoneLinkDialog> createState() => _PhoneLinkDialogState();
+}
+
+class _PhoneLinkDialogState extends State<_PhoneLinkDialog> {
+  DmxtractState? _state;
+  StreamSubscription<PhoneLinkEvent>? _subscription;
+  String _statusText = 'Preparing a private link…';
+  String? _error;
+  bool _connected = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_state != null) return;
+    final state = DmxScope.of(context);
+    _state = state;
+    state.beginPhoneLink();
+    _subscription = state.phoneLinkEvents?.listen(_handleEvent);
+  }
+
+  void _handleEvent(PhoneLinkEvent event) {
+    if (!mounted) return;
+    setState(() {
+      switch (event.type) {
+        case 'waiting':
+          _statusText = 'Waiting for your phone to scan…';
+        case 'phoneJoined':
+          _statusText = 'Connecting…';
+        case 'connected':
+          _connected = true;
+          _statusText = 'Connected — take or choose photos on your phone.';
+        case 'closed':
+          if (_error == null) _statusText = 'Your phone closed the connection.';
+        case 'error':
+          _error =
+              event.message ?? 'Couldn’t connect the two devices — try again.';
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    unawaited(_subscription?.cancel());
+    _state?.endPhoneLink();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = DmxScope.of(context);
+    final url = state.phoneLinkUrl;
+    final photoCount = state.photos.length;
+    return AlertDialog(
+      title: const Text('Send photos from your phone'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (url != null)
+              _QrCode(data: url, size: 208)
+            else
+              const SizedBox(
+                width: 208,
+                height: 208,
+                child: Center(child: CircularProgressIndicator()),
+              ),
+            const SizedBox(height: 16),
+            const Text(
+              'Scan with your phone’s camera. Photos travel straight to this browser tab and never touch a server.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: DmxColors.muted),
+            ),
+            const SizedBox(height: 14),
+            if (_error != null)
+              Text(
+                _error!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: DmxColors.red,
+                  fontWeight: FontWeight.w700,
+                ),
+              )
+            else
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: _connected
+                        ? const Icon(
+                            Icons.check_circle,
+                            color: DmxColors.green,
+                            size: 16,
+                          )
+                        : const CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(child: Text(_statusText)),
+                ],
+              ),
+            if (photoCount > 0) ...[
+              const SizedBox(height: 10),
+              Text(
+                '$photoCount ${photoCount == 1 ? 'photo' : 'photos'} received',
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: DmxColors.green,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(photoCount == 0 ? 'Cancel' : 'Done'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Renders a QR code for [data] with a white quiet zone, using the pure-Dart
+/// `qr` encoder — no image assets, no network fetch for the code itself.
+class _QrCode extends StatelessWidget {
+  const _QrCode({required this.data, required this.size});
+  final String data;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final qrCode = QrCode(payload: QrPayload.fromString(data));
+    final image = QrImage(qrCode);
+    return Container(
+      width: size,
+      height: size,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: CustomPaint(painter: _QrPainter(image)),
+    );
+  }
+}
+
+class _QrPainter extends CustomPainter {
+  const _QrPainter(this.image);
+  final QrImage image;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final moduleSize = size.width / image.moduleCount;
+    final paint = Paint()..color = Colors.black;
+    for (var row = 0; row < image.moduleCount; row++) {
+      for (var col = 0; col < image.moduleCount; col++) {
+        if (!image.isDark(row, col)) continue;
+        canvas.drawRect(
+          Rect.fromLTWH(
+            col * moduleSize,
+            row * moduleSize,
+            moduleSize,
+            moduleSize,
+          ),
+          paint,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _QrPainter oldDelegate) =>
+      oldDelegate.image.moduleCount != image.moduleCount ||
+      !identical(oldDelegate.image, image);
 }

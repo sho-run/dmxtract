@@ -26,8 +26,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: npm ci
       - run: node scripts/check-source-boundary.mjs
-      - run: node --test netlify/tests/fixture-matches.test.mjs
+      - run: node --test netlify/tests/*.test.mjs
 
   flutter:
     runs-on: ubuntu-latest

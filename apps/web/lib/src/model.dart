@@ -102,6 +102,25 @@ class DmxChannel {
     confidence: ((json['confidence'] as Map?)?['score'] as num? ?? 1)
         .toDouble(),
   );
+
+  /// The non-"normal" (strobe/lamp/reset/maintenance) range covering
+  /// [value], if any. Ranges may overlap (see `validate.rs`'s
+  /// `range.overlap` warning, which does not reject them), so this always
+  /// checks every range rather than only the first one that contains
+  /// [value] — the single source of truth for "is this value risky",
+  /// shared by the Test screen's unlock-dialog gate and
+  /// `DmxtractState.sendValue`'s send-path gate so the two can never
+  /// disagree about the same channel/value pair.
+  DmxRange? riskyRangeFor(int value) {
+    for (final range in ranges) {
+      if (range.contains(value) && range.safety != 'normal') return range;
+    }
+    return null;
+  }
+
+  /// True if [value] falls inside any non-"normal" range. See
+  /// [riskyRangeFor].
+  bool isRisky(int value) => riskyRangeFor(value) != null;
 }
 
 class FixtureMode {

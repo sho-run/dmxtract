@@ -36,4 +36,46 @@ void main() {
     expect(status, PairApprovalStatus.denied);
     expect(client.token, isNull);
   });
+
+  test('an expired pairing request maps to PairApprovalStatus.expired', () async {
+    // api.rs `pair_status` returns this as a 200, not an error, exactly
+    // once before pruning the pairing record.
+    final client = BridgeClient(
+      client: MockClient(
+        (_) async => http.Response(
+          '{"status":"expired","message":"That pairing request expired. Ask again."}',
+          200,
+        ),
+      ),
+    );
+
+    final status = await client.checkPairApproval('request-id');
+
+    expect(status, PairApprovalStatus.expired);
+  });
+
+  test('a 401 clears a dead session token instead of leaving it live', () async {
+    final client = BridgeClient(
+      client: MockClient(
+        (_) async => http.Response(
+          '{"error":"This token belongs to a different site or has expired."}',
+          401,
+        ),
+      ),
+    )..token = 'stale-token';
+
+    await expectLater(
+      client.begin('https://example.test', {}),
+      throwsException,
+    );
+
+    expect(
+      client.token,
+      isNull,
+      reason:
+          'a bridge that self-exited its idle watchdog (api.rs '
+          'start_idle_watchdog) invalidates every in-memory session; the '
+          'client must not keep retrying the same dead token',
+    );
+  });
 }

@@ -125,20 +125,27 @@
       <p>If the site operator enables existing-profile lookup, DMXtract may send the detected manufacturer, model, and mode sizes to its same-origin lookup service. It does not send the manual, filename, channel table, bridge token, DMX network details, or hardware identity.</p>
 
       <h2>Testing a physical light</h2>
-      <p>The optional DMXtract Bridge listens only on your own computer. Browser pairing is bound to the requesting website origin, expires when the bridge quits, and starts output at zero. Fixture output is not routed through a hosted service.</p>
+      <p><strong>USB cable, straight from this browser tab.</strong> On Chrome or Edge, the browser's own device picker is the only gate — once you grant a cable, DMX frames go from this tab to that USB device directly. Nothing is installed, and fixture output never leaves this machine. The browser remembers which cable you granted until you revoke it from the Test step or the browser's own site settings.</p>
+      <p><strong>Network node (Art-Net/sACN), via the optional DMXtract Bridge.</strong> The bridge listens on loopback only — it exposes no LAN service — and runs solely on your own computer. Browser pairing is bound to the requesting website's origin, is approved on a page the bridge itself shows on this computer (not inside DMXtract), and expires when the bridge quits. Output always starts at zero.</p>
+      <p><strong>Your own console or software, or the numbers-only preview.</strong> Neither path asks this browser to grant anything — no USB permission, no bridge pairing. You dial in every value yourself, and this tab sends zero DMX.</p>
+
+      <h2>Sending photos from your phone</h2>
+      <p>The optional QR "Send photos from your phone" hand-off sends manual photos from a phone straight into an open desktop tab over a direct, peer-to-peer connection (WebRTC) — never uploaded to a server. It's entirely optional: the affordance only appears when the desktop can confirm the signaling relay is configured, and it stays hidden offline or on a self-host that hasn't set one up.</p>
+      <p>The key that protects the connection lives only in the QR code's URL fragment, which browsers never send in a request; the phone page strips it from its address bar as soon as it has read it, and the desktop keeps it in the QR dialog's address bar only for as long as that dialog stays open. The one server involved — the phone-link signaling relay — only ever sees and forwards short-lived, encrypted connection-setup messages (an offer, an answer) that it cannot read; it never sees a photo. Once the two devices connect, photos travel directly device-to-device and the relay is not contacted again for that session.</p>
+      <p>Setting up that direct connection has both devices contact a third-party STUN server (Google's <code>stun.l.google.com</code>) to find each other's network address — this discloses both devices' IP addresses to Google for that step, but the STUN server sees only network addresses, never the encrypted connection-setup messages or any photo content.</p>
 
       <h2>Normal hosting data</h2>
-      <p>Like any website, the hosting provider necessarily processes ordinary request information such as your IP address to deliver files. DMXtract has no account requirement, advertising tracker, behavioral analytics, or document-upload endpoint.</p>
+      <p>Like any website, the hosting provider necessarily processes ordinary request information such as your IP address to deliver files. DMXtract has no account requirement, advertising tracker, or behavioral analytics. The one endpoint that accepts POSTed data — the phone hand-off signaling relay described above — stores only short-lived encrypted bytes it cannot read, never a manual, photo, or other document.</p>
 
       <h2>Links to other services</h2>
-      <p>If you choose a result from GDTF Share or follow a GitHub link, that service's privacy terms apply after you leave DMXtract.</p>
+      <p>If you choose a result from GDTF Share or follow a GitHub link, that service's privacy terms apply after you leave DMXtract. Using the phone hand-off also contacts Google's STUN server, as described above.</p>
 
       <h2>Questions or corrections</h2>
       <p>Open an issue in the <a href="https://github.com/sho-run/dmxtract">DMXtract GitHub project</a>. Please do not attach a manual unless you have permission to redistribute it.</p>
     </section>
   </main>
   <footer>
-    Last updated August 3, 2026 · Open source by
+    Last updated August 6, 2026 · Open source by
     <a href="https://sho.run/">sho.run</a>
   </footer>
 </body>

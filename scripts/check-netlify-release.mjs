@@ -10,6 +10,10 @@ const requiredFiles = [
   "index.html",
   "about/index.html",
   "privacy/index.html",
+  "phone/index.html",
+  "phone/phone.js",
+  "phone_link.js",
+  "phone_link_shared.js",
   "llms.txt",
   "robots.txt",
   "sitemap.xml",
@@ -89,7 +93,7 @@ for (const filename of functionFiles) {
     failures.push(`netlify/functions/${filename}: tests must not be deployed as functions`);
   }
 }
-if (functionFiles.join(",") !== "fixture-matches.mjs") {
+if (functionFiles.join(",") !== "fixture-matches.mjs,phone-link-signal.mjs") {
   failures.push(`netlify/functions: unexpected deploy entries (${functionFiles.join(", ")})`);
 }
 

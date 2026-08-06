@@ -1,0 +1,9 @@
+{
+  "name": "dmxtract",
+  "private": true,
+  "description": "Netlify Functions dependencies for DMXtract. See netlify/functions/ and netlify/tests/.",
+  "type": "module",
+  "dependencies": {
+    "@netlify/blobs": "^10.7.12"
+  }
+}

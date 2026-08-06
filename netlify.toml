@@ -10,10 +10,31 @@ from = "/api/fixture-matches"
 to = "/.netlify/functions/fixture-matches"
 status = 200
 
+[[redirects]]
+from = "/api/phone-link-signal"
+to = "/.netlify/functions/phone-link-signal"
+status = 200
+
 [[headers]]
 for = "/*"
 [headers.values]
 Content-Security-Policy = "default-src 'self'; img-src 'self' blob: data:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-KtrQemILdXFZAUZtvCimGblF22b+BnODN3YBRAqSs6A=' 'wasm-unsafe-eval'; connect-src 'self' http://127.0.0.1:46321 ws://127.0.0.1:46321; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
+Referrer-Policy = "no-referrer"
+Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+X-Content-Type-Options = "nosniff"
+X-Frame-Options = "DENY"
+
+# The phone page is a separate static page (no Flutter, no wasm) that mobile
+# browsers open from the QR code. It gets its own, stricter policy: no
+# wasm-unsafe-eval, and connect-src limited to this origin's signaling
+# endpoint. The STUN lookup this page also makes (see phone_link_shared.js)
+# is WebRTC ICE traffic, which CSP source lists do not govern — a
+# `stun:host:port` entry does not parse as a valid CSP source expression
+# either, so it was removed rather than left in as a no-op.
+[[headers]]
+for = "/phone/*"
+[headers.values]
+Content-Security-Policy = "default-src 'self'; img-src 'self' blob: data:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
 Referrer-Policy = "no-referrer"
 Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 X-Content-Type-Options = "nosniff"
