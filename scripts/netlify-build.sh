@@ -20,6 +20,13 @@ if [[ "$expected_wasm_hash" != "$actual_wasm_hash" ]]; then
   exit 1
 fi
 
+# Netlify function dependencies (@netlify/blobs) must be installed before the
+# deploy bundler resolves imports; without them phone-link-signal crashes at
+# import time in production.
+if [[ -f "$repository_root/package.json" ]]; then
+  (cd "$repository_root" && npm ci --no-audit --no-fund)
+fi
+
 mkdir -p "$toolchain_root"
 if [[ ! -x "$toolchain_root/flutter/bin/flutter" ]]; then
   curl --fail --location --silent --show-error \
