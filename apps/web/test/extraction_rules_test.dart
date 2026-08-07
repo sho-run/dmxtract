@@ -724,6 +724,345 @@ Compact Direct DMX Mode
     );
   });
 
+  test('parses a Chauvet mode-matrix table across a page break', () {
+    // A trimmed but real excerpt of the Chauvet DJ Rotosphere HP manual's
+    // "DMX Channel Assignments and Values" table, matching what this file's
+    // own vendored PDF.js pipeline (apps/web/web/vendor/pdfjs/pdf.min.mjs,
+    // via manual_extractor.js's positionedText()) actually produces for
+    // testcorpus/Rotosphere_HP_UM_Rev1.pdf: a header naming three modes by
+    // their channel count (3Ch/12Ch/28Ch), a dash meaning a function does
+    // not exist in that mode, a channel whose function is a conditional
+    // alternative printed on its own lines ("Program speed" / "Sound
+    // sensitivity", chosen by channel 1's value) with the row's own number
+    // line sandwiched between them, the table continuing on a second page
+    // behind footer/header furniture and a repeated header row, and — after
+    // the table's real last row — a page footer and the start of the next
+    // section, to confirm neither leaks into the table as bogus ranges.
+    //
+    // U+F0F3 (`sep` below) is the private-use codepoint PDF.js's text layer
+    // resolves this PDF's value-range separator glyph to. `pdftotext`
+    // (poppler) leaves the same glyph unresolved as a *different* private-use
+    // codepoint instead, so a `pdftotext -layout` dump and the in-app PDF.js
+    // pipeline can disagree about which character sits between a range's
+    // start and end for the very same PDF — using 'ó' here (as earlier
+    // versions of this test did) tests neither of those and silently passes
+    // even when the real separator isn't recognized.
+    const sep = '';
+    final manual = StringBuffer('''CHAUVET DJ
+Rotosphere HP User Manual Rev. 1
+The Rotosphere HP works with a DMX controller. Information about DMX is in
+the CHAUVET DMX Primer, available from chauvetlighting.com/downloads.
+DMX Channel Assignments and Values
+ 3Ch 12Ch 28Ch Function                           Value   Percent/Setting
+                                                   000    No function
+  1     1     –   Program                       001 $sep 250 Automatic program
+                                                251 $sep 255 Sound-active program
+                  Program speed
+                                                000 $sep 255 Automatic program speed, slow to fast
+                  (when Ch. 1 is 001 250)
+  2     2     –
+                  Sound sensitivity
+                                                000 $sep 255 Sound sensitivity, low to high
+                  (when Ch. 1 is 251 255)
+''');
+    const colors = [
+      'Red',
+      'Green',
+      'Blue',
+      'White',
+      'Cyan',
+      'Magenta',
+      'Yellow',
+      'Orange',
+    ];
+    var channel28 = 1;
+    for (var zone = 1; zone <= 3; zone++) {
+      for (var index = 0; index < colors.length; index++) {
+        final ch12 = zone == 1 ? '${index + 3}' : '–';
+        manual.writeln(
+          '  –    $ch12    $channel28   ${colors[index]} $zone'
+          '                       000 $sep 255 0–100%',
+        );
+        channel28++;
+      }
+    }
+    manual.write(
+      '''                                                000 $sep 005 No function
+  –    11    25   Strobe
+                                                006 $sep 255 Strobe, slow to fast
+
+
+Rotosphere HP User Manual Rev. 1                                          7
+=== DMXTRACT PAGE 8 ===
+Operation
+ 3Ch 12Ch 28Ch Function                                Value   Percent/Setting
+                                                        000    No function
+    –    –     26   Program                          001 $sep 250 Automatic program
+                                                     251 $sep 255 Sound-active program
+                    Program speed
+                                                     000 $sep 255 Automatic program speed, slow to fast
+                    (when Ch. 26 is 001 250)
+    –    –     27
+                    Sound sensitivity
+                                                     000 $sep 255 Sound sensitivity, low to high
+                    (when Ch. 26 is 251 255)
+                                                     000 $sep 127 Motor indexing
+                                                     128 $sep 189 Motor rotation, fast to slow
+    3   12     28   Motor rotation
+                                                     190 $sep 193 Stop
+                                                     194 $sep 255 Reverse motor rotation, slow to fast
+Configuration (Standalone)
+Set the product in one of the standalone modes to control without a DMX
+controller.
+8   Rotosphere HP User Manual Rev. 1
+=== DMXTRACT PAGE 11 ===
+Automatic Programs
+To run the Rotosphere HP with an automatic program, follow the instructions
+below.
+''',
+    );
+
+    final result = fixtureFromManualText(
+      manual.toString(),
+      'CHV-Rotosphere-HP_UM_Rev1.pdf',
+    );
+    expect(result.fixture.manufacturer, 'Chauvet DJ');
+    expect(result.fixture.model, 'Rotosphere HP');
+
+    List<DmxChannel> channelsOf(FixtureMode mode) => mode.channelIds
+        .map(
+          (id) => result.fixture.channels.firstWhere((item) => item.id == id),
+        )
+        .toList();
+
+    expect(result.fixture.modes.map((mode) => mode.name), [
+      '3Ch',
+      '12Ch',
+      '28Ch',
+    ]);
+    expect(result.fixture.modes.map((mode) => mode.channelIds.length), [
+      3,
+      12,
+      28,
+    ]);
+
+    final threeCh = channelsOf(result.fixture.modes[0]);
+    expect(threeCh[0].name, 'Program');
+    expect(
+      threeCh[0].ranges.map((range) => (range.start, range.end, range.name)),
+      [
+        (0, 0, 'No function'),
+        (1, 250, 'Automatic program'),
+        (251, 255, 'Sound-active program'),
+      ],
+    );
+    expect(threeCh[1].name, 'Program speed / Sound sensitivity');
+    expect(threeCh[2].name, 'Motor rotation');
+    // The table's real last row (28Ch's 28th channel, shared by all three
+    // modes) has exactly these four ranges — not a fifth one named after
+    // the page footer or the "Configuration (Standalone)" section that
+    // follows it in the source text.
+    expect(
+      threeCh[2].ranges.map((range) => (range.start, range.end, range.name)),
+      [
+        (0, 127, 'Motor indexing'),
+        (128, 189, 'Motor rotation, fast to slow'),
+        (190, 193, 'Stop'),
+        (194, 255, 'Reverse motor rotation, slow to fast'),
+      ],
+    );
+
+    final twelveCh = channelsOf(result.fixture.modes[1]);
+    expect(twelveCh[2].name, 'Red 1');
+    // The reported bug: only channels 1-3 were ever extracted. Channels
+    // beyond that must exist and carry their real names, not placeholders.
+    expect(twelveCh[3].name, 'Green 1');
+    // A bare-percentage range description ("0-100%") is normalized to a
+    // neutral "Full range" name rather than kept literally — see
+    // `_matrixRange`.
+    expect(
+      twelveCh[2].ranges.map((range) => (range.start, range.end, range.name)),
+      [(0, 255, 'Full range')],
+    );
+    expect(twelveCh.last.name, 'Motor rotation');
+    expect(
+      twelveCh.map((channel) => channel.name.startsWith('Channel ')),
+      everyElement(isFalse),
+    );
+    final strobe = twelveCh.firstWhere(
+      (channel) => channel.name.contains('strobe'),
+    );
+    expect(
+      strobe.ranges.map((range) => (range.start, range.end, range.safety)),
+      [(0, 5, 'normal'), (6, 255, 'strobe')],
+    );
+
+    final twentyEightCh = channelsOf(result.fixture.modes[2]);
+    expect(twentyEightCh[8].name, 'Red 2');
+    expect(
+      twentyEightCh.map((channel) => channel.name.startsWith('Channel ')),
+      everyElement(isFalse),
+    );
+
+    expect(
+      result.questions.where((item) => item.contains('channel rows')),
+      isEmpty,
+    );
+  });
+
+  test(
+    'rejoins a matrix row whose position token was split onto its own line',
+    () {
+      // Chauvet DJ Sentinel Wash Q7Z ILS, "DMX Charts" table (9CH/14CH): the
+      // real extraction shape (running the vendored pdf.min.mjs over
+      // testcorpus/Sentinel_Wash_Q7Z_ILS_UM_Rev2-1.pdf) has channel 14's
+      // row split across two physical lines — a lone "–" (this function
+      // doesn't exist in the 9CH mode) on one line, then
+      // "14 Movement macros ..." on the next — because positionedText()'s
+      // y-tolerance row grouping puts that cell at a slightly different
+      // vertical center than the rest of the row. Without rejoining the two
+      // lines, this channel came out as a placeholder "Channel 14" with a
+      // synthetic 0-255 range, its real ranges got misattributed to
+      // channel 13, and a "we read 13 of 14 channel rows" question fired.
+      // The full 9CH/14CH table, real content, so every declared channel
+      // is actually present and the parser's own "we read N of M channel
+      // rows" completeness check can't mask the split-row bug behind an
+      // unrelated incompleteness question.
+      const sep = '';
+      final manual =
+          '''CHAUVET DJ
+Sentinel Wash Q7Z ILS User Manual Rev. 2
+The Sentinel Wash Q7Z ILS works with a DMX controller.
+DMX Channel Assignments and Values
+DMX Charts
+9CH 14CH Function   Value Percent/Setting
+1   1 Pan   000 $sep 255 0–540°
+-   2 Pan Fine   000 $sep 255 Fine control of panning
+2   3 Tilt   000 $sep 255 0–225°
+-   4 Tilt Fine   000 $sep 255 Fine control of tilting
+-   5 Pan/Tilt speed   000 $sep 255 Pan/tilt speed (fast to slow)
+3   6 Dimmer   000 $sep 255 0-100%
+4   7 Red   000 $sep 255 0-100%
+5   8 Green   000 $sep 255 0-100%
+6   9 Blue   000 $sep 255 0-100%
+7   10 White   000 $sep 255 0-100%
+000 $sep 005 No function
+8   11 Strobe
+006 $sep 255 Strobe (slow to fast)
+9   12 Zoom   000 $sep 255 Wide to narrow
+000 $sep 007 No function
+008 $sep 015 Black out on pan/tilt movement
+016 $sep 095 No function
+096 $sep 103 Pan reset
+-   13 Function   104 $sep 111 Tilt reset
+112 $sep 143 No function
+144 $sep 151 Zoom reset
+152 $sep 159 All reset
+160 $sep 255 No function
+000 $sep 007 No function
+008 $sep 023 Movement macro 1
+024 $sep 039 Movement macro 2
+040 $sep 055 Movement macro 3
+056 $sep 071 Movement macro 4
+072 $sep 087 Movement macro 5
+088 $sep 103 Movement macro 6
+104 $sep 119 Movement macro 7
+-
+14 Movement macros   120 $sep 135 Movement macro 8
+136 $sep 151 Sound-active movement macro 1
+152 $sep 167 Sound-active movement macro 2
+168 $sep 183 Sound-active movement macro 3
+184 $sep 199 Sound-active movement macro 4
+200 $sep 215 Sound-active movement macro 5
+216 $sep 231 Sound-active movement macro 6
+232 $sep 247 Sound-active movement macro 7
+248 $sep 255 Sound-active movement macro 8
+''';
+      final result = fixtureFromManualText(
+        manual,
+        'Sentinel_Wash_Q7Z_ILS_UM_Rev2-1.pdf',
+      );
+      final fourteenCh = result.fixture.modes.firstWhere(
+        (mode) => mode.name == '14Ch',
+      );
+      expect(fourteenCh.channelIds.length, 14);
+      final channel14 = result.fixture.channels.firstWhere(
+        (channel) => channel.id == fourteenCh.channelIds[13],
+      );
+      // The reported bug: without rejoining, this channel came out as a
+      // placeholder "Channel 14" with a synthetic 0-255 range, and its real
+      // name/ranges were misattributed to channel 13 ("Function").
+      expect(channel14.name, isNot(startsWith('Channel ')));
+      expect(channel14.name, contains('Movement macros'));
+      expect(channel14.ranges.map((range) => (range.start, range.end)), [
+        (0, 7),
+        (8, 23),
+        (24, 39),
+        (40, 55),
+        (56, 71),
+        (72, 87),
+        (88, 103),
+        (104, 119),
+        (120, 135),
+        (136, 151),
+        (152, 167),
+        (168, 183),
+        (184, 199),
+        (200, 215),
+        (216, 231),
+        (232, 247),
+        (248, 255),
+      ]);
+      final channel13 = result.fixture.channels.firstWhere(
+        (channel) => channel.id == fourteenCh.channelIds[12],
+      );
+      expect(channel13.name, 'Function');
+      expect(channel13.ranges.length, 9);
+      expect(
+        result.questions.where((item) => item.contains('channel rows')),
+        isEmpty,
+      );
+    },
+  );
+
+  test('does not mistake a value line for a channel row when the separator '
+      'is a plain dash', () {
+    // `_rangeSeparatorClass` treats dash variants as legitimate
+    // value-range separators (some Chauvet manuals do print a plain
+    // dash there instead of the symbol-font glyph), but the mode-matrix
+    // row grammar's position-token class also treats a bare dash as
+    // "this channel doesn't exist in this mode". A value line like
+    // "001 - 250 Automatic program" therefore tokenizes exactly like a
+    // real channel row would for a 3Ch/12Ch/28Ch header ([1, null, 250]),
+    // and 250 as a channel position doesn't exceed Dart's int range or
+    // any obviously-wrong bound — only checking it against each mode's
+    // *declared* channel count catches it.
+    final manual = '''CHAUVET DJ
+Rotosphere HP User Manual Rev. 1
+DMX Channel Assignments and Values
+ 3Ch 12Ch 28Ch Function                           Value   Percent/Setting
+                                                   000    No function
+  1     1     –   Program                       001 - 250 Automatic program
+                                                251 - 255 Sound-active program
+''';
+    final result = fixtureFromManualText(manual, 'Rotosphere_HP_UM_Rev1.pdf');
+    final threeCh = result.fixture.modes.firstWhere(
+      (mode) => mode.name == '3Ch',
+    );
+    final program = result.fixture.channels.firstWhere(
+      (channel) => channel.id == threeCh.channelIds.first,
+    );
+    expect(program.name, 'Program');
+    expect(
+      program.ranges.map((range) => (range.start, range.end, range.name)),
+      [
+        (0, 0, 'No function'),
+        (1, 250, 'Automatic program'),
+        (251, 255, 'Sound-active program'),
+      ],
+    );
+  });
+
   test('local PDF corpus or public golden corpus remains discoverable', () {
     final corpus = Directory('../../testcorpus');
     expect(corpus.existsSync(), isTrue);
