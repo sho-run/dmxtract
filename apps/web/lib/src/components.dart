@@ -767,6 +767,16 @@ class AdvancedDisclosurePanel extends StatelessWidget {
   );
 }
 
+/// Deployment-configurable bug-report destination. Deployments can point this
+/// at their own contact channel with --dart-define=DMXTRACT_BUG_REPORT_URL=…;
+/// an unset or empty define falls back to the public issue tracker.
+const String _definedBugReportUrl = String.fromEnvironment(
+  'DMXTRACT_BUG_REPORT_URL',
+);
+const String bugReportUrl = _definedBugReportUrl == ''
+    ? 'https://github.com/sho-run/dmxtract/issues'
+    : _definedBugReportUrl;
+
 class _Footer extends StatelessWidget {
   const _Footer({required this.compact});
   final bool compact;
@@ -793,6 +803,7 @@ class _Footer extends StatelessWidget {
         ),
         _FooterLink(label: 'Privacy', url: '/privacy/', compact: compact),
         _FooterLink(label: 'About', url: '/about/', compact: compact),
+        _FooterLink(label: 'Report a bug', url: bugReportUrl, compact: compact),
         if (!compact)
           const Text(
             'Open source by',
@@ -868,7 +879,15 @@ class _FooterLink extends StatelessWidget {
     label: label,
     link: true,
     child: TextButton(
-      onPressed: () => web.window.open(url, '_blank', 'noopener,noreferrer'),
+      onPressed: () {
+        if (url.startsWith('mailto:')) {
+          // A mailto: in a _blank tab leaves an empty tab behind in Chrome;
+          // assigning location hands it to the mail client without navigating.
+          web.window.location.href = url;
+        } else {
+          web.window.open(url, '_blank', 'noopener,noreferrer');
+        }
+      },
       style: TextButton.styleFrom(
         foregroundColor: DmxColors.muted,
         minimumSize: Size(44, compact ? 36 : 44),
