@@ -5,10 +5,12 @@ class ExtractedManual {
     required this.text,
     required this.pageCount,
     this.thumbnails = const [],
+    this.rotations = const [],
   });
   final String text;
   final int pageCount;
   final List<String> thumbnails;
+  final List<int> rotations;
 }
 
 Future<ExtractedManual> extractManual(Uint8List bytes, String mime) =>
@@ -22,4 +24,5 @@ Future<String> extractManualRegion(
   double top,
   double width,
   double height,
+  int rotation,
 ) => throw UnsupportedError('Manual extraction runs in Chrome or Edge.');

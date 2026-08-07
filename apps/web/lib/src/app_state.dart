@@ -25,10 +25,21 @@ class ManualPhoto {
 }
 
 class _ManualPageSource {
-  const _ManualPageSource(this.bytes, this.mime, this.page);
+  const _ManualPageSource(
+    this.bytes,
+    this.mime,
+    this.page, [
+    this.rotation = 0,
+  ]);
   final Uint8List bytes;
   final String mime;
   final int page;
+
+  /// The rotation [extractManual] applied to this page before OCR (see
+  /// [ExtractedManual.rotations]) — always 0 for PDFs. Kept alongside the
+  /// raw bytes so a region re-read renders its source in the same frame as
+  /// the thumbnail the user drew the box on.
+  final int rotation;
 }
 
 class DmxtractState extends ChangeNotifier {
@@ -209,7 +220,12 @@ class DmxtractState extends ChangeNotifier {
         text.add('=== PHOTO ${index + 1}: ${photo.name} ===\n${manual.text}');
         previewImages.addAll(manual.thumbnails);
         for (var page = 0; page < manual.pageCount; page++) {
-          sources.add(_ManualPageSource(photo.bytes, photo.mime, page));
+          final rotation = page < manual.rotations.length
+              ? manual.rotations[page]
+              : 0;
+          sources.add(
+            _ManualPageSource(photo.bytes, photo.mime, page, rotation),
+          );
         }
       }
       _manualText = text.join('\n\n');
@@ -274,7 +290,12 @@ class DmxtractState extends ChangeNotifier {
       thumbnails = manual.thumbnails;
       _pageSources = [
         for (var page = 0; page < manual.pageCount; page++)
-          _ManualPageSource(bytes, mime, page),
+          _ManualPageSource(
+            bytes,
+            mime,
+            page,
+            page < manual.rotations.length ? manual.rotations[page] : 0,
+          ),
       ];
       status = 'Building your fixture';
       notifyListeners();
@@ -326,6 +347,7 @@ class DmxtractState extends ChangeNotifier {
         top,
         width,
         height,
+        source?.rotation ?? 0,
       );
       final result = fixtureFromManualText(
         '$_manualText\n\nChannel value table\n$regionText',

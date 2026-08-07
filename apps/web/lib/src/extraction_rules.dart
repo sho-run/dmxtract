@@ -133,13 +133,19 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
   final matrixModes = namedModes.isEmpty
       ? _modeMatrixTables(text)
       : const <_DetectedModeTable>[];
-  final contextualModes = namedModes.isEmpty && matrixModes.isEmpty
+  final sequentialModes = namedModes.isEmpty && matrixModes.isEmpty
+      ? _sequentialModeTables(text)
+      : const <_DetectedModeTable>[];
+  final contextualModes =
+      namedModes.isEmpty && matrixModes.isEmpty && sequentialModes.isEmpty
       ? _contextualPersonalityTables(text)
       : const <_DetectedModeTable>[];
   final structuredModes = namedModes.isNotEmpty
       ? namedModes
       : matrixModes.isNotEmpty
       ? matrixModes
+      : sequentialModes.isNotEmpty
+      ? sequentialModes
       : contextualModes.isNotEmpty
       ? contextualModes
       : _codedChannelTables(text);
@@ -1921,6 +1927,326 @@ bool _looksLikeMatrixFunctionLabel(String value) {
     return false;
   }
   return RegExp(r'[A-Za-z]').hasMatch(value);
+}
+
+/// Parses manuals that print "N-channel mode" / "N channel mode"
+/// headings each followed by a sequential
+/// Channel / Function / DMX Value / Functional Description table, a common
+/// layout in budget moving-effect-light manuals (as opposed to the coded
+/// "<code> Channel Table" layout [_codedChannelTables] handles, where the
+/// function name trails the value range instead of leading it). A channel
+/// with several value ranges (e.g. a nine-range strobe channel) simply
+/// repeats as extra range-only rows under the same channel.
+List<_DetectedModeTable> _sequentialModeTables(String text) {
+  // A heading normally opens its own line, but a photographed two-column
+  // spread OCRs with both columns run onto one physical line, landing a
+  // later heading mid-line right after whatever column-separator glyph
+  // (commonly "|" or ";") the OCR engine inserted at the gutter — e.g.
+  // "...infinite rotation | 42-channel mode". Accepting a heading there
+  // too, not just at true line start, is what lets every mode in a
+  // multi-mode manual get picked up instead of just the one whose heading
+  // happened to survive on its own line.
+  final heading = RegExp(
+    r'(?:^[ \t]*|[|;][ \t]*)(\d{1,3})\s*-?\s*channel\s+mode\b',
+    caseSensitive: false,
+    multiLine: true,
+  );
+  final matches = heading.allMatches(text).toList();
+  if (matches.isEmpty) return const [];
+  final hasChannelTableHeading = RegExp(
+    r'\bDMX\s+Channel\s+Table\b',
+    caseSensitive: false,
+  ).hasMatch(text);
+  // A single heading on its own is too easy to hit by accident (stray prose
+  // mentioning a channel count); require either a second sequential-mode
+  // heading or a "DMX Channel Table" section heading to corroborate that
+  // this manual actually uses this table dialect before committing to it.
+  if (matches.length < 2 && !hasChannelTableHeading) return const [];
+
+  // A heading repeating on a continuation page (a long table split across
+  // pages commonly reprints its heading after the page break) must not
+  // start a second, discarded table: every occurrence of a given channel
+  // count is parsed into the *same* channel map, keyed by first-seen
+  // order, so the rows that follow a repeated heading are kept instead of
+  // silently lost.
+  final order = <int>[];
+  final parsedByCount = <int, Map<int, _DetectedChannel>>{};
+  for (var index = 0; index < matches.length; index++) {
+    final match = matches[index];
+    final channelCount = int.tryParse(match.group(1)!);
+    if (channelCount == null || channelCount < 1 || channelCount > 512) {
+      continue;
+    }
+    final end = index + 1 < matches.length
+        ? matches[index + 1].start
+        : text.length;
+    final section = text.substring(match.end, end);
+    final parsed = parsedByCount.putIfAbsent(channelCount, () {
+      order.add(channelCount);
+      return <int, _DetectedChannel>{};
+    });
+    _parseSequentialModeRows(section, channelCount, parsed);
+  }
+
+  final modes = <_DetectedModeTable>[];
+  for (final channelCount in order) {
+    final parsed = parsedByCount[channelCount]!;
+    _fillRepeatedColorSeries(parsed, channelCount);
+    modes.add(
+      _DetectedModeTable(
+        code: '$channelCount-channel mode',
+        channelCount: channelCount,
+        parsedCount: parsed.length,
+        channels: [
+          for (var position = 1; position <= channelCount; position++)
+            parsed[position] ??
+                _DetectedChannel(
+                  name: 'Channel $position',
+                  kind: 'generic',
+                  confidence: .25,
+                ),
+        ],
+      ),
+    );
+  }
+  return modes;
+}
+
+void _parseSequentialModeRows(
+  String section,
+  int channelCount,
+  Map<int, _DetectedChannel> parsed,
+) {
+  // Channel + function + value range on one physical row, e.g.
+  // "1 X-axis 0-255 (0-540 degrees)".
+  final fullRow = RegExp(
+    '^\\s*(\\d{1,3})\\s+(.*?)\\s*(\\d{1,3})\\s*$_rangeSeparatorClass'
+    '\\s*(\\d{1,3})(?:\\s+(.*?))?\\s*\$',
+  );
+  // A follow-up value range for the channel currently being read, printed
+  // with no channel number of its own — how a multi-range channel (a
+  // strobe's nine speed bands, a rotation channel's four control zones)
+  // continues after its first row.
+  final continuationRow = RegExp(
+    '^\\s*(\\d{1,3})\\s*$_rangeSeparatorClass\\s*(\\d{1,3})'
+    '(?:\\s+(.*?))?\\s*\$',
+  );
+  // Channel + function with no value range on this row — the range(s)
+  // follow as continuation rows below.
+  final functionOnlyRow = RegExp(r'^\s*(\d{1,3})\s+([A-Za-z].*?)\s*$');
+  final ellipsisRow = RegExp(r'^(?:\.{2,}|…+)(?:\s+(?:\.{2,}|…+))*$');
+
+  int? currentChannel;
+  for (final rawLine in section.split(RegExp(r'[\r\n]+'))) {
+    final normalized = _normalizeTableLine(rawLine);
+    if (normalized.isEmpty ||
+        normalized.startsWith('=== DMXTRACT PAGE') ||
+        _looksLikePageFurniture(normalized) ||
+        ellipsisRow.hasMatch(normalized)) {
+      // A literal "......"/"……" row stands in for the intermediate channels
+      // of a repeated RGBW-per-zone block; skipping it here (rather than
+      // trying to parse it) lets _fillRepeatedColorSeries synthesize those
+      // channels afterward from the explicit zones printed before and after
+      // the ellipsis.
+      continue;
+    }
+    final line = _resolveSequentialLine(normalized, fullRow, continuationRow);
+
+    final full = fullRow.firstMatch(line);
+    if (full != null) {
+      final position = int.parse(full.group(1)!);
+      if (position < 1 || position > channelCount) continue;
+      final start = _normalizeDmxValue(int.parse(full.group(3)!));
+      final end = _normalizeDmxValue(int.parse(full.group(4)!));
+      if (start > end || end > 255) continue;
+      final functionText = _cleanFunction(full.group(2)!);
+      final description = _cleanFunction(full.group(5) ?? '');
+      final classifyText = functionText.isNotEmpty
+          ? _prepareSequentialFunctionName(functionText)
+          : description;
+      final definition = _classifyTableChannel(classifyText, position);
+      final range = _rangeFromParts(
+        start,
+        end,
+        description.isNotEmpty ? description : functionText,
+        definition.kind,
+      );
+      parsed[position] = _mergeDetectedChannel(
+        parsed[position],
+        definition,
+        range,
+      );
+      currentChannel = position;
+      continue;
+    }
+
+    final continuationMatch = continuationRow.firstMatch(line);
+    if (continuationMatch != null && currentChannel != null) {
+      final start = _normalizeDmxValue(int.parse(continuationMatch.group(1)!));
+      final end = _normalizeDmxValue(int.parse(continuationMatch.group(2)!));
+      final existing = parsed[currentChannel];
+      if (start <= end && end <= 255 && existing != null) {
+        final description = _cleanFunction(continuationMatch.group(3) ?? '');
+        parsed[currentChannel] = _mergeDetectedChannel(
+          existing,
+          existing,
+          _rangeFromParts(start, end, description, existing.kind),
+        );
+      }
+      continue;
+    }
+
+    final functionOnly = functionOnlyRow.firstMatch(line);
+    if (functionOnly != null) {
+      final position = int.parse(functionOnly.group(1)!);
+      if (position < 1 || position > channelCount) continue;
+      final functionText = _cleanFunction(functionOnly.group(2)!);
+      if (functionText.isEmpty || _looksLikePageFurniture(functionText)) {
+        continue;
+      }
+      final definition = _classifyTableChannel(
+        _prepareSequentialFunctionName(functionText),
+        position,
+      );
+      parsed.putIfAbsent(
+        position,
+        () => _DetectedChannel(
+          name: definition.name,
+          kind: definition.kind,
+          fineOf: definition.fineOf,
+          color: definition.color,
+          ranges: <DmxRange>[],
+          confidence: definition.confidence,
+        ),
+      );
+      currentChannel = position;
+    }
+  }
+}
+
+/// Rewrites a "Color Dimming"/"Color Dimmer" function name — either
+/// fully spelled ("Red Dimming") or an abbreviated per-zone LED code ("R1
+/// LED Dimming") — down to just the color token so [_classifyTableChannel]
+/// resolves it through one of its per-color branches instead of its
+/// generic-dimmer branch, which would otherwise discard which color (and
+/// zone) the dimmer controls: that branch's "dimmer/dimming/intensity"
+/// check runs before the color-aware checks and matches on the word
+/// "Dimming" alone.
+const _sequentialLetterColors = <String, String>{
+  'r': 'Red',
+  'g': 'Green',
+  'b': 'Blue',
+  'w': 'White',
+  'a': 'Amber',
+  'uv': 'UV',
+};
+
+String _prepareSequentialFunctionName(String value) {
+  final colorDimming = RegExp(
+    r'^(Red|Green|Blue|White|Amber|UV|Ultraviolet)\s+Dimm(?:ing|er)$',
+    caseSensitive: false,
+  ).firstMatch(value);
+  if (colorDimming != null) return colorDimming.group(1)!;
+  // The single-letter shorthand ("R Dimming", "W Dimmer") this manual
+  // family's RGBW master-dimming rows actually print; expand it to the
+  // full color name so it takes the same color-aware path as the
+  // spelled-out form above instead of falling into the generic
+  // dimmer/dimming/intensity branch of [_classifyTableChannel], which
+  // matches on the word "dimming" alone and drops which color it is.
+  final letterDimming = RegExp(
+    r'^([RGBWA]|UV)\s+Dimm(?:ing|er)$',
+    caseSensitive: false,
+  ).firstMatch(value);
+  if (letterDimming != null) {
+    return _sequentialLetterColors[letterDimming.group(1)!.toLowerCase()]!;
+  }
+  final zoneDimming = RegExp(
+    r'^([RGBW])(\d{1,2})\s+LED\s+Dimm(?:ing|er)$',
+    caseSensitive: false,
+  ).firstMatch(value);
+  if (zoneDimming != null) {
+    return '${zoneDimming.group(1)}${zoneDimming.group(2)}';
+  }
+  // A bare trailing color letter after a "Light strip" prefix ("Light
+  // strip R") is this manual family's shorthand for the light strip
+  // sub-fixture's color channels. Scoped to this specific prefix (rather
+  // than any function name that happens to end in a single letter) so
+  // unrelated text isn't misread as a color.
+  final lightStripColor = RegExp(
+    r'^Light\s*strip\s+([RGBWA])$',
+    caseSensitive: false,
+  ).firstMatch(value);
+  if (lightStripColor != null) {
+    return _sequentialLetterColors[lightStripColor.group(1)!.toLowerCase()]!;
+  }
+  return value;
+}
+
+/// Chooses between a row's normalized text and its digit-rejoined variant
+/// (see [_rejoinDigitSplitRangeTokens]) for value-range matching.
+///
+/// The rejoin is a blunt instrument: its digit-run pattern can't tell a
+/// genuinely OCR-split byte value ("19 0" -> "190") apart from an unrelated
+/// digit at the end of the function-name column bumping into the value
+/// column's leading digit ("...Zone 1 0-255..." -> "...Zone 10-255...").
+/// So the normalized line is tried first, and only displaced by the
+/// rejoined line when the normalized reading isn't trustworthy: no match at
+/// all, a numerically invalid range, or (for a full row) no function text —
+/// an empty function is the fingerprint of the false rejoin candidate above,
+/// since the digit that should have started the value instead got read as
+/// the whole "function", leaving the value's own leading digit to open the
+/// range early.
+String _resolveSequentialLine(
+  String normalized,
+  RegExp fullRow,
+  RegExp continuationRow,
+) {
+  final rejoined = _rejoinDigitSplitRangeTokens(normalized);
+  if (rejoined == normalized) return normalized;
+  if (_isConfidentSequentialRowMatch(normalized, fullRow, continuationRow)) {
+    return normalized;
+  }
+  return rejoined;
+}
+
+bool _isConfidentSequentialRowMatch(
+  String line,
+  RegExp fullRow,
+  RegExp continuationRow,
+) {
+  final full = fullRow.firstMatch(line);
+  if (full != null) {
+    final start = _normalizeDmxValue(int.parse(full.group(3)!));
+    final end = _normalizeDmxValue(int.parse(full.group(4)!));
+    if (start <= end && end <= 255 && full.group(2)!.trim().isNotEmpty) {
+      return true;
+    }
+  }
+  final continuation = continuationRow.firstMatch(line);
+  if (continuation != null) {
+    final start = _normalizeDmxValue(int.parse(continuation.group(1)!));
+    final end = _normalizeDmxValue(int.parse(continuation.group(2)!));
+    if (start <= end && end <= 255) return true;
+  }
+  return false;
+}
+
+/// Rejoins a 2-3 digit DMX byte value that OCR split with a stray inner
+/// space beside a range separator ("128-19 0", "200-2 50", "2 51-255" all
+/// become "128-190", "200-250", "251-255"). Only touches digit runs
+/// directly adjacent to a separator character, so ordinary function-name
+/// text is never altered by itself — [_resolveSequentialLine] is what
+/// keeps it from being applied where it would corrupt a row instead.
+String _rejoinDigitSplitRangeTokens(String line) {
+  const splitNumber = r'\d(?:\s?\d){0,2}';
+  final pattern = RegExp(
+    '($splitNumber)\\s*($_rangeSeparatorClass)\\s*($splitNumber)',
+  );
+  return line.replaceAllMapped(pattern, (match) {
+    final start = match.group(1)!.replaceAll(' ', '');
+    final end = match.group(3)!.replaceAll(' ', '');
+    return '$start${match.group(2)}$end';
+  });
 }
 
 List<_DetectedModeTable> _codedChannelTables(String text) {

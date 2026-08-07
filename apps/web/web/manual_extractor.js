@@ -139,6 +139,107 @@ function removeTableLines(canvas) {
   return cleaned;
 }
 
+function downscaleCanvas(source, maxSide) {
+  const longest = Math.max(source.width, source.height);
+  if (longest <= maxSide) return source;
+  const ratio = maxSide / longest;
+  const scaled = document.createElement('canvas');
+  scaled.width = Math.round(source.width * ratio);
+  scaled.height = Math.round(source.height * ratio);
+  scaled.getContext('2d').drawImage(source, 0, 0, scaled.width, scaled.height);
+  return scaled;
+}
+
+function rotateCanvas(source, degrees) {
+  if (degrees === 0) return source;
+  const swapped = degrees === 90 || degrees === 270;
+  const rotated = document.createElement('canvas');
+  rotated.width = swapped ? source.height : source.width;
+  rotated.height = swapped ? source.width : source.height;
+  const context = rotated.getContext('2d');
+  context.translate(rotated.width / 2, rotated.height / 2);
+  context.rotate(degrees * Math.PI / 180);
+  context.drawImage(source, -source.width / 2, -source.height / 2);
+  return rotated;
+}
+
+// Score = sum of per-word OCR confidence (equivalently: mean confidence
+// weighted by word count). A photo at the wrong orientation typically yields
+// both fewer recognizable words AND lower per-word confidence than the same
+// photo upright, so summing rewards both signals and discriminates far more
+// reliably than mean confidence alone (which a rotation with 3 lucky-guess
+// words can win on) or word count alone (which noise-prone rotations can
+// pad with short garbage tokens). The recognized text is kept too: on a
+// typical phone photo (much higher resolution than the table actually
+// needs) this downscaled trial pass can read *better* than the full-size
+// pass that follows it, so the caller gets the option to keep it.
+async function quickOrientationScore(worker, canvas) {
+  const result = await worker.recognize(canvas);
+  const words = (result.data.words || []).filter(word => word.text && word.text.trim());
+  const totalConfidence = words.reduce((sum, word) => sum + (word.confidence || 0), 0);
+  return {
+    score: totalConfidence,
+    wordCount: words.length,
+    meanConfidence: words.length ? totalConfidence / words.length : 0,
+    text: result.data.text || '',
+  };
+}
+
+const ORIENTATION_TRIAL_MAX_SIDE = 1200;
+const ORIENTATION_CONFIRM_MAX_SIDE = 2400;
+const ORIENTATION_DECISIVE_WORD_COUNT = 20;
+// Calibrated against the real-photo corpus in testcorpus/: upright photos
+// scored 66% mean confidence at this trial size, sideways ones scored 24-41%
+// read at the wrong (0-degree) orientation — 58 sits with clear margin on
+// both sides, so upright photos actually take the fast path they are meant
+// to (the old 80 bar sat above every upright photo measured, so the "skip
+// the extra trials" branch never fired on this corpus).
+const ORIENTATION_DECISIVE_CONFIDENCE = 58;
+// If the best and second-best rotation scores are within this fraction of
+// each other, the 1200px trial isn't a reliable tiebreaker (measured margin
+// on real sideways photos was as low as 16%) — re-score just those two
+// candidates at a higher resolution rather than commit to a near coin flip.
+const ORIENTATION_MARGIN_RATIO = 0.25;
+
+// Detect a physically sideways/upside-down page by content, not EXIF:
+// createImageBitmap already applies EXIF orientation (camera tilt), but a
+// manual page photographed while lying sideways on a table carries no EXIF
+// signal at all. Try all 4 rotations at low resolution, score each with a
+// quick OCR pass, and keep the best. Skip the trial entirely when the
+// unrotated pass already scores decisively well, so upright photos (the
+// common case) pay no extra OCR cost.
+async function detectRotation(worker, canvas) {
+  const trialBase = downscaleCanvas(canvas, ORIENTATION_TRIAL_MAX_SIDE);
+  const zeroTrial = await quickOrientationScore(worker, trialBase);
+  const candidates = [{ rotation: 0, ...zeroTrial }];
+  const decisive = zeroTrial.wordCount >= ORIENTATION_DECISIVE_WORD_COUNT
+    && zeroTrial.meanConfidence >= ORIENTATION_DECISIVE_CONFIDENCE;
+  if (!decisive) {
+    for (const degrees of [90, 180, 270]) {
+      candidates.push({
+        rotation: degrees,
+        ...(await quickOrientationScore(worker, rotateCanvas(trialBase, degrees))),
+      });
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  let best = candidates[0];
+  const runnerUp = candidates[1];
+  if (runnerUp && best.score > 0
+    && (best.score - runnerUp.score) / best.score < ORIENTATION_MARGIN_RATIO) {
+    const confirmBase = downscaleCanvas(canvas, ORIENTATION_CONFIRM_MAX_SIDE);
+    const rescored = [];
+    for (const candidate of [best, runnerUp]) {
+      rescored.push({
+        rotation: candidate.rotation,
+        ...(await quickOrientationScore(worker, rotateCanvas(confirmBase, candidate.rotation))),
+      });
+    }
+    best = rescored[0].score >= rescored[1].score ? rescored[0] : rescored[1];
+  }
+  return best;
+}
+
 function tableTextScore(text) {
   const normalized = text.replace(/^[\s|[\]{}()_~=—–-]+/gm, '');
   const heading = /(?:channel\s+table|dmx\s+(?:charts?|traits|channels?))/i.test(normalized) ? 500 : 0;
@@ -254,15 +355,33 @@ async function extractImage(bytes, mime) {
   const url = URL.createObjectURL(blob);
   const worker = await ocrWorker();
   try {
-    const result = await worker.recognize(canvas);
-    return { pageCount: 1, pages: [{ page: 1, text: result.data.text || '' }], thumbnails: [url] };
+    announce('Checking photo orientation', 1, 1);
+    const detection = await detectRotation(worker, canvas);
+    const oriented = rotateCanvas(canvas, detection.rotation);
+    announce('Reading the photo', 1, 1);
+    const result = await worker.recognize(oriented);
+    const words = (result.data.words || []).filter(word => word.text && word.text.trim());
+    const fullScore = words.reduce((sum, word) => sum + (word.confidence || 0), 0);
+    // The orientation trial already OCR'd this same page (downscaled) to
+    // pick a rotation; on a very high-resolution phone photo that
+    // downscaled pass can score higher than this "real" full-size pass
+    // (measured on the corpus this rotation-detection lane targets), so
+    // keep whichever reading actually scored better instead of always
+    // discarding the trial's text.
+    const text = detection.score > fullScore ? detection.text : (result.data.text || '');
+    const thumbnail = detection.rotation === 0 ? url : await canvasToThumbnail(oriented);
+    return {
+      pageCount: 1,
+      pages: [{ page: 1, text, rotation: detection.rotation }],
+      thumbnails: [thumbnail],
+    };
   } finally {
     await worker.terminate();
     setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
 }
 
-async function renderSourcePage(bytes, mime, pageNumber) {
+async function renderSourcePage(bytes, mime, pageNumber, rotation) {
   if (mime === 'application/pdf') {
     const pdfDocument = await pdfjs.getDocument({ data: bytes, wasmUrl: './vendor/pdfjs/wasm/' }).promise;
     const page = await pdfDocument.getPage(pageNumber);
@@ -279,12 +398,16 @@ async function renderSourcePage(bytes, mime, pageNumber) {
   canvas.height = bitmap.height;
   canvas.getContext('2d').drawImage(bitmap, 0, 0);
   bitmap.close();
-  return canvas;
+  // extractImage() may have rotated this same photo to make it upright for
+  // OCR (see detectRotation) — the region box the user draws is drawn over
+  // that rotated thumbnail, so the crop source has to be rotated the same
+  // way or the box lands on unrelated pixels.
+  return rotateCanvas(canvas, rotation || 0);
 }
 
-async function extractRegion(bytes, mime, pageNumber, left, top, width, height) {
+async function extractRegion(bytes, mime, pageNumber, left, top, width, height, rotation) {
   announce('Reading the selected table', pageNumber, pageNumber);
-  const source = await renderSourcePage(bytes, mime, pageNumber);
+  const source = await renderSourcePage(bytes, mime, pageNumber, rotation);
   const x = Math.max(0, Math.min(source.width - 1, Math.round(left * source.width)));
   const y = Math.max(0, Math.min(source.height - 1, Math.round(top * source.height)));
   const cropWidth = Math.max(20, Math.min(source.width - x, Math.round(width * source.width)));
