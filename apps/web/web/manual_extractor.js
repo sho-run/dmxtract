@@ -234,10 +234,27 @@ async function extractPdf(bytes) {
 async function extractImage(bytes, mime) {
   announce('Reading the photo', 1, 1);
   const blob = new Blob([bytes], { type: mime });
+  // Tesseract fetches URL inputs, and the site CSP (connect-src 'self')
+  // rightly blocks blob: fetches — decode to a canvas ourselves instead,
+  // matching every other recognize() call site.
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(blob);
+  } catch (error) {
+    throw new Error(
+      `This browser could not decode the photo (${mime || 'unknown format'}). ` +
+        'HEIC photos are not supported yet — please retake or export as JPEG or PNG.',
+    );
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0);
+  bitmap.close();
   const url = URL.createObjectURL(blob);
   const worker = await ocrWorker();
   try {
-    const result = await worker.recognize(url);
+    const result = await worker.recognize(canvas);
     return { pageCount: 1, pages: [{ page: 1, text: result.data.text || '' }], thumbnails: [url] };
   } finally {
     await worker.terminate();
