@@ -14,6 +14,7 @@ external JSPromise<JSString> _extractManualRegion(
   JSNumber top,
   JSNumber width,
   JSNumber height,
+  JSNumber rotation,
 );
 
 class ExtractedManual {
@@ -21,10 +22,19 @@ class ExtractedManual {
     required this.text,
     required this.pageCount,
     this.thumbnails = const [],
+    this.rotations = const [],
   });
   final String text;
   final int pageCount;
   final List<String> thumbnails;
+
+  /// The clockwise rotation (0/90/180/270) manual_extractor.js's
+  /// content-based orientation detector applied to each page before OCR —
+  /// only ever non-zero for photo sources, never PDFs. A region re-read
+  /// (extractManualRegion) must rotate its own source render by the same
+  /// amount, or the box the user drew over the (rotated) thumbnail lands on
+  /// the wrong pixels of the (unrotated) original.
+  final List<int> rotations;
 }
 
 Future<ExtractedManual> extractManual(Uint8List bytes, String mime) async {
@@ -40,6 +50,9 @@ Future<ExtractedManual> extractManual(Uint8List bytes, String mime) async {
         .join('\n\n'),
     pageCount: json['pageCount'] as int? ?? pages.length,
     thumbnails: (json['thumbnails'] as List? ?? []).cast<String>(),
+    rotations: pages
+        .map((page) => (page as Map)['rotation'] as int? ?? 0)
+        .toList(),
   );
 }
 
@@ -51,6 +64,7 @@ Future<String> extractManualRegion(
   double top,
   double width,
   double height,
+  int rotation,
 ) async => (await _extractManualRegion(
   bytes.toJS,
   mime.toJS,
@@ -59,4 +73,5 @@ Future<String> extractManualRegion(
   top.toJS,
   width.toJS,
   height.toJS,
+  rotation.toJS,
 ).toDart).toDart;

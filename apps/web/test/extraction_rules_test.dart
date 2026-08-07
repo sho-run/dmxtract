@@ -1092,4 +1092,384 @@ DMX Channel Assignments and Values
     expect(names.any((name) => name.toLowerCase().contains('shehds')), isTrue);
     expect(names.any((name) => name.contains('FXpar')), isTrue);
   });
+
+  test('parses sequential "<N>-channel mode" tables with multi-range channels '
+      'and an ellipsis-expanded RGBW zone run', () {
+    final result = fixtureFromManualText(
+      _sequentialModeManual(noisy: false),
+      'noname_moving_effect_light.pdf',
+    );
+    final fixture = result.fixture;
+    expect(fixture.modes.map((mode) => mode.channelIds.length).toList(), [
+      30,
+      42,
+      58,
+    ]);
+
+    DmxChannel channelAt(String modeName, int position) {
+      final mode = fixture.modes.firstWhere((m) => m.name == modeName);
+      final id = mode.channelIds[position - 1];
+      return fixture.channels.firstWhere((c) => c.id == id);
+    }
+
+    final rotation = channelAt('30-channel mode', 7);
+    expect(rotation.name, 'Rotation');
+    expect(rotation.ranges.map((r) => (r.start, r.end)), [
+      (0, 127),
+      (128, 190),
+      (191, 192),
+      (193, 255),
+    ]);
+
+    final strobe = channelAt('30-channel mode', 9);
+    expect(strobe.kind, 'strobe');
+    expect(strobe.ranges, hasLength(9));
+    expect(strobe.ranges.first, isA<DmxRange>());
+    expect(strobe.ranges.map((r) => (r.start, r.end)), [
+      (0, 3),
+      (4, 103),
+      (104, 107),
+      (108, 207),
+      (208, 212),
+      (213, 225),
+      (226, 238),
+      (239, 251),
+      (252, 255),
+    ]);
+
+    // The manual's own "0 - 256"/"0 - 257" typos normalize to 255.
+    final xAxis = channelAt('30-channel mode', 1);
+    expect(xAxis.ranges.single.end, 255);
+    final totalDimming30 = channelAt('30-channel mode', 8);
+    expect(totalDimming30.ranges.single.end, 255);
+
+    final red = channelAt('42-channel mode', 1);
+    expect(red.name, 'Red');
+    expect(red.kind, 'colorIntensity');
+    expect(red.color, 'RED');
+    final totalDimming42 = channelAt('42-channel mode', 12);
+    expect(totalDimming42.ranges.single.end, 255);
+
+    final w1 = channelAt('58-channel mode', 34);
+    expect(w1.name, 'White 1');
+    expect(w1.kind, 'colorIntensity');
+    expect(w1.color, 'WHITE');
+
+    // Synthesized from the ellipsis run between explicit zone 1 (31-34)
+    // and zone 7 (55-58): zone 4 starts at channel 43.
+    final zone4Red = channelAt('58-channel mode', 43);
+    expect(zone4Red.name, 'Red 4');
+    expect(zone4Red.kind, 'colorIntensity');
+    expect(zone4Red.confidence, lessThan(w1.confidence));
+
+    final r7 = channelAt('58-channel mode', 55);
+    expect(r7.name, 'Red 7');
+    expect(r7.kind, 'colorIntensity');
+    expect(r7.color, 'RED');
+
+    // Filler rows whose function name ends in a digit ("Control 10") must
+    // not have that trailing digit absorbed into the DMX value by the
+    // digit-split-OCR rejoin: every one of these reads as a plain 0-255
+    // range, never a corrupted sub-range like "10-255" or a dropped row
+    // that falls back to a "Channel N" placeholder.
+    for (var position = 10; position <= 29; position++) {
+      final channel = channelAt('30-channel mode', position);
+      expect(channel.name, 'Control $position');
+      expect(channel.ranges.single.start, 0);
+      expect(channel.ranges.single.end, 255);
+    }
+    for (var position = 21; position <= 42; position++) {
+      final channel = channelAt('42-channel mode', position);
+      expect(channel.name, 'Control $position');
+      expect(channel.ranges.single.start, 0);
+      expect(channel.ranges.single.end, 255);
+    }
+  });
+
+  test('survives OCR noise in sequential mode tables: digit-split values, '
+      'manual typo values, and a garbled description', () {
+    final result = fixtureFromManualText(
+      _sequentialModeManual(noisy: true),
+      'noname_moving_effect_light_ocr.pdf',
+    );
+    final fixture = result.fixture;
+    expect(fixture.modes.map((mode) => mode.channelIds.length).toList(), [
+      30,
+      42,
+      58,
+    ]);
+
+    DmxChannel channelAt(String modeName, int position) {
+      final mode = fixture.modes.firstWhere((m) => m.name == modeName);
+      final id = mode.channelIds[position - 1];
+      return fixture.channels.firstWhere((c) => c.id == id);
+    }
+
+    final rotation = channelAt('30-channel mode', 7);
+    // "128-19 0" (digit-split OCR) still resolves to 128-190.
+    expect(rotation.ranges.map((r) => (r.start, r.end)), [
+      (0, 127),
+      (128, 190),
+      (191, 192),
+      (193, 255),
+    ]);
+
+    final strobe = channelAt('30-channel mode', 9);
+    expect(strobe.ranges, hasLength(9));
+
+    final red = channelAt('42-channel mode', 1);
+    expect(red.name, 'Red');
+    expect(red.kind, 'colorIntensity');
+
+    final w1 = channelAt('58-channel mode', 34);
+    expect(w1.name, 'White 1');
+    final zone4Red = channelAt('58-channel mode', 43);
+    expect(zone4Red.name, 'Red 4');
+    final r7 = channelAt('58-channel mode', 55);
+    expect(r7.name, 'Red 7');
+  });
+
+  test('guard: a Chauvet mode-matrix manual still parses via the matrix path '
+      'after adding the sequential "<N>-channel mode" table dialect', () {
+    // Same shape as the "preserves Chauvet-style channel names and value
+    // ranges" test above, plus mid-value prose that says "27 channel
+    // mode" without being a real heading — proving the new sequential-mode
+    // detector (anchored to the start of a line) doesn't hijack the
+    // matrix-table parser's input.
+    final table = StringBuffer('''CHAUVET DJ COLORpalette RGB
+DMX Channel Assignments and Values
+27-CH 15-CH 9-CH 6-CH 3-CH
+000 ⇔ 019 27 channel mode
+1 Mode
+020 ⇔ 255 DMX personalities 15-CH – 3-CH
+2 No Function 000 ⇔ 255 No function
+000 ⇔ 002 No function
+3 Strobe
+003 ⇔ 249 Slow to fast
+250 ⇔ 255 Sound-Active
+''');
+    for (var channel = 4; channel <= 27; channel++) {
+      const colors = ['Red', 'Green', 'Blue'];
+      final color = colors[(channel - 4) % 3];
+      final zone = (channel - 4) ~/ 3 + 1;
+      table.writeln('$channel $color $zone 000 ⇔ 255 0–100%');
+    }
+    final result = fixtureFromManualText(
+      table.toString(),
+      'COLORpalette_UM_Rev4_WO.pdf',
+    );
+    expect(
+      result.fixture.modes.map((mode) => mode.channelIds.length),
+      containsAll([27, 15, 9, 6, 3]),
+    );
+    expect(result.fixture.channels, hasLength(27));
+    expect(result.fixture.channels[0].name, 'Mode');
+    expect(result.fixture.channels[3].name, 'Red 1');
+  });
+
+  test('single-letter "R/G/B/W Dimming" and "Light strip R/G/B" sequential '
+      'rows resolve to distinct colors instead of a generic Dimmer', () {
+    final b = StringBuffer()
+      ..writeln('4. DMX Channel Table')
+      ..writeln()
+      ..writeln('9-channel mode')
+      ..writeln('Channel Function DMX Value Functional Description')
+      ..writeln('1 R Dimming 0-255 Red intensity')
+      ..writeln('2 G Dimming 0-255 Green intensity')
+      ..writeln('3 B Dimming 0-255 Blue intensity')
+      ..writeln('4 W Dimming 0-255 White intensity')
+      ..writeln('5 Light strip R 0-255 Red')
+      ..writeln('6 Light strip G 0-255 Green')
+      ..writeln('7 Light strip B 0-255 Blue')
+      ..writeln('8 Total dimming 0-255 Brightness');
+    final result = fixtureFromManualText(b.toString(), 'letter_colors.pdf');
+    final mode = result.fixture.modes.firstWhere(
+      (m) => m.name == '9-channel mode',
+    );
+    DmxChannel channelAt(int position) => result.fixture.channels.firstWhere(
+      (c) => c.id == mode.channelIds[position - 1],
+    );
+
+    final r = channelAt(1);
+    expect(r.name, 'Red');
+    expect(r.kind, 'colorIntensity');
+    expect(r.color, 'RED');
+    final g = channelAt(2);
+    expect(g.kind, 'colorIntensity');
+    expect(g.color, 'GREEN');
+    final blue = channelAt(3);
+    expect(blue.kind, 'colorIntensity');
+    expect(blue.color, 'BLUE');
+    final w = channelAt(4);
+    expect(w.kind, 'colorIntensity');
+    expect(w.color, 'WHITE');
+
+    final stripR = channelAt(5);
+    expect(stripR.kind, 'colorIntensity');
+    expect(stripR.color, 'RED');
+    final stripG = channelAt(6);
+    expect(stripG.kind, 'colorIntensity');
+    expect(stripG.color, 'GREEN');
+    final stripB = channelAt(7);
+    expect(stripB.kind, 'colorIntensity');
+    expect(stripB.color, 'BLUE');
+
+    // The master dimmer stays generic and distinct from all of the above.
+    final total = channelAt(8);
+    expect(total.kind, 'intensity');
+    expect(total.color, isNull);
+  });
+
+  test('recovers a sequential-mode heading that OCR ran onto the end of the '
+      'previous line, as happens on a photographed two-column spread', () {
+    // Modeled on the real no-name moving-effect-light corpus photos: a
+    // wide two-page spread OCRs with both columns merged onto one physical
+    // line, so the second and third mode headings land mid-line right
+    // after whatever column-gutter glyph the OCR engine inserted ("|" or
+    // ";") instead of opening their own line the way the first heading did.
+    final manual =
+        '4. DMX Channel Table\n'
+        '30-channel mode\n'
+        'Channel Function DMX Value Functional Description\n'
+        '1 X-axis 0-255 0-540 degrees\n'
+        '193-255 Counterclockwise infinite rotation | 42-channel mode\n'
+        'Channel Function DMX Value Functional Description\n'
+        '1 Red Dimming 0-255 Red intensity\n'
+        '15 tal 0-255 ; 58-channel mode\n'
+        'Channel Function DMX Value Functional Description\n'
+        '1 X-axis 0-255 0-540 degrees\n';
+    final result = fixtureFromManualText(manual, 'noname_two_column.pdf');
+    expect(
+      result.fixture.modes.map((mode) => mode.channelIds.length).toList(),
+      [30, 42, 58],
+    );
+  });
+
+  test('merges a sequential-mode table whose heading repeats on a '
+      'continuation page instead of dropping the rows that follow it', () {
+    final b = StringBuffer()
+      ..writeln('4. DMX Channel Table')
+      ..writeln()
+      ..writeln('30-channel mode')
+      ..writeln('Channel Function DMX Value Functional Description');
+    for (var channel = 1; channel <= 15; channel++) {
+      b.writeln('$channel Control $channel 0-255 Function $channel');
+    }
+    b
+      ..writeln('=== DMXTRACT PAGE 2 ===')
+      ..writeln('30-channel mode')
+      ..writeln('Channel Function DMX Value Functional Description');
+    for (var channel = 16; channel <= 30; channel++) {
+      b.writeln('$channel Control $channel 0-255 Function $channel');
+    }
+    final result = fixtureFromManualText(b.toString(), 'split_table.pdf');
+    expect(result.fixture.modes, hasLength(1));
+    final mode = result.fixture.modes.single;
+    expect(mode.name, '30-channel mode');
+    expect(mode.channelIds, hasLength(30));
+    for (var position = 16; position <= 30; position++) {
+      final channel = result.fixture.channels.firstWhere(
+        (c) => c.id == mode.channelIds[position - 1],
+      );
+      expect(channel.name, 'Control $position');
+      expect(channel.confidence, greaterThan(0.5));
+    }
+  });
+}
+
+/// Builds a synthetic "N-channel mode" manual excerpt modeled on a
+/// no-name moving-effect-light manual's "4. DMX Channel Table" section
+/// (three modes: 30/42/58 channels). When [noisy] is true, a handful of
+/// rows are rewritten the way OCR mangles them: a value split by a stray
+/// inner space ("128-19 0", "200-2 50", "2 51-255") and a missing/garbled
+/// description cell — on top of the manual's own "0 - 256"/"0 - 257"/
+/// "0 - 258" typos, which are present either way.
+String _sequentialModeManual({required bool noisy}) {
+  final b = StringBuffer()
+    ..writeln('NONAME MOVING EFFECT LIGHT')
+    ..writeln('User Manual')
+    ..writeln('4. DMX Channel Table')
+    ..writeln()
+    ..writeln('30-channel mode')
+    ..writeln('Channel Function DMX Value Functional Description')
+    ..writeln('1 X-axis 0-256 0-540 degrees')
+    ..writeln('2 X-axis fine adjustment 0-255 16bit')
+    ..writeln('3 Y-axis 0-205 0-270 degrees')
+    ..writeln('4 Y-axis fine adjustment 0-255 16bit')
+    ..writeln('5 XY Speed 0-255 fast to slow')
+    ..writeln('6 Focusing 0-255 angle small to large')
+    ..writeln('7 Rotation 0-127 Indexed positioning')
+    ..writeln(
+      noisy
+          ? '128-19 0 Rotate clockwise infinitely'
+          : '128-190 Rotate clockwise infinitely',
+    )
+    ..writeln('191-192 Stop')
+    ..writeln('193-255 Rotate counterclockwise infinitely')
+    ..writeln('8 Total dimming 0-257 Brightness')
+    ..writeln('9 Strobe 0-3 Turn off')
+    ..writeln('4-103 Synchronous flash, slow to fast')
+    ..writeln('104-107 Light up')
+    ..writeln('108-207 Even frequency flash, slow to fast')
+    ..writeln('208-212 Light up')
+    ..writeln('213-225 Slow random strobe')
+    ..writeln('226-238 Medium speed random strobe')
+    ..writeln('239-251 High-speed random strobe')
+    ..writeln('252-255 Light up');
+  for (var channel = 10; channel <= 29; channel++) {
+    b.writeln('$channel Control $channel 0-255 Function $channel');
+  }
+  b
+    ..writeln(noisy ? '30 Reset 0-250' : '30 Reset 0-250 No function')
+    ..writeln(
+      noisy
+          ? '2 51-255 R3s3t ~5 s3conds (garbled)'
+          : '251-255 Reset about 5 seconds',
+    )
+    ..writeln()
+    ..writeln('42-channel mode')
+    ..writeln('Channel Function DMX Value Functional Description')
+    ..writeln('1 Red Dimming 0-255 Red intensity')
+    ..writeln('2 Red fine tuning 0-255 Red fine')
+    ..writeln('3 Green Dimming 0-255 Green intensity')
+    ..writeln('4 Green fine tuning 0-255 Green fine')
+    ..writeln('5 Blue Dimming 0-255 Blue intensity')
+    ..writeln('6 Blue Fine Tuning 0-255 Blue fine')
+    ..writeln('7 White Dimming 0-255 White intensity')
+    ..writeln('8 White fine tuning 0-255 White fine')
+    ..writeln('9 Linear color temperature adjustment 0-255 Warm to cool')
+    ..writeln('10 Color Macros 0-255 Presets')
+    ..writeln('11 Strobe 0-255 Slow to fast')
+    ..writeln('12 Total dimming 0-258 Brightness')
+    ..writeln('13 Dimming fine-tuning 0-255 Fine')
+    ..writeln('14 Level horizontal 0-255 Pan')
+    ..writeln('15 Horizontal fine-tuning 0-255 Pan fine')
+    ..writeln('16 Vertical 0-255 Tilt')
+    ..writeln('17 Vertical fine adjustment 0-255 Tilt fine')
+    ..writeln('18 Function reserve 0-255 Reserved')
+    ..writeln('19 Reset 0-199 No function')
+    ..writeln(noisy ? '200-2 50 Reserved' : '200-250 Reserved')
+    ..writeln('251-255 Reset 5 seconds')
+    ..writeln('20 Focusing 0-255 Focus');
+  for (var channel = 21; channel <= 42; channel++) {
+    b.writeln('$channel Control $channel 0-255 Function $channel');
+  }
+  b
+    ..writeln()
+    ..writeln('58-channel mode')
+    ..writeln('Channel Function DMX Value Functional Description');
+  for (var channel = 1; channel <= 30; channel++) {
+    b.writeln('$channel Control $channel 0-255 Function $channel');
+  }
+  b
+    ..writeln('31 R1 LED Dimming 0-255 Red zone 1 brightness')
+    ..writeln('32 G1 LED Dimming 0-255 Green zone 1 brightness')
+    ..writeln('33 B1 LED Dimming 0-255 Blue zone 1 brightness')
+    ..writeln('34 W1 LED Dimming 0-255 White zone 1 brightness')
+    ..writeln('...... ...... ...... ......')
+    ..writeln('55 R7 LED Dimming 0-255 Red zone 7 brightness')
+    ..writeln('56 G7 LED Dimming 0-255 Green zone 7 brightness')
+    ..writeln('57 B7 LED Dimming 0-255 Blue zone 7 brightness')
+    ..writeln('58 W7 LED Dimming 0-255 White zone 7 brightness');
+  return b.toString();
 }
