@@ -21,7 +21,16 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
     caseSensitive: false,
   ).firstMatch(flat);
   final manualTitleMatch = RegExp(
-    r'^\s*(.{3,70}?)\s+User Manual(?:\s+(?:Rev\.?|Revision)\s*[A-Z0-9.]+)?\s*$',
+    // The separator between the title and "User Manual" is deliberately
+    // [ \t]+, not \s+: \s+ also matches newlines, and this pattern runs
+    // against the raw (non-flattened) text with multiline ^/$ anchors, so a
+    // \s+ gap would happily bridge across the "=== DMXTRACT PAGE N ==="
+    // marker between pages — e.g. a cover page whose product name renders
+    // as an unreadable image, leaving only the orphaned text "User Manual",
+    // would match "=== DMXTRACT PAGE 1 ===\nUser Manual" as the title,
+    // extracting the page marker itself as the model.
+    r'^[ \t]*(.{3,70}?)[ \t]+User Manual'
+    r'(?:[ \t]+(?:Rev\.?|Revision)\s*[A-Z0-9.]+)?[ \t]*$',
     caseSensitive: false,
     multiLine: true,
   ).firstMatch(text);
@@ -121,11 +130,16 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
     _addColorComponents(known, flat);
   }
   final namedModes = _namedDmxModeTables(text);
-  final contextualModes = namedModes.isEmpty
+  final matrixModes = namedModes.isEmpty
+      ? _modeMatrixTables(text)
+      : const <_DetectedModeTable>[];
+  final contextualModes = namedModes.isEmpty && matrixModes.isEmpty
       ? _contextualPersonalityTables(text)
       : const <_DetectedModeTable>[];
   final structuredModes = namedModes.isNotEmpty
       ? namedModes
+      : matrixModes.isNotEmpty
+      ? matrixModes
       : contextualModes.isNotEmpty
       ? contextualModes
       : _codedChannelTables(text);
@@ -1418,6 +1432,497 @@ String _contextDisplayName(String value) {
   return 'Single';
 }
 
+/// Parses "mode-matrix" tables — the Chauvet DJ house style where several DMX
+/// modes are printed as parallel channel-number columns ahead of a shared
+/// Function/Value column, e.g. a header row of "3Ch 12Ch 28Ch Function Value
+/// Percent/Setting" followed by rows like "– 3 1 Red 1 000 255 0-100%" where
+/// a dash means the function does not exist in that mode. Some rows carry
+/// two alternative functions for the same channel (e.g. "Program speed" vs
+/// "Sound sensitivity", selected by another channel's value); those merge
+/// into one channel with a combined name. The table commonly continues onto
+/// a following page behind a repeated header row and footer/header
+/// furniture, which this parser treats as one continuous section because the
+/// repeated header does not match the row grammar and simply falls through.
+///
+/// This is deliberately a separate path from [_contextualPersonalityTables]:
+/// that parser keys mode boundaries off named "Single/Dual Control Mode"
+/// section headings and "Name (NCh)" personality groups, neither of which
+/// this table has — its header is the numeric "NCh" tokens themselves, with
+/// no named personality and no section heading. Reusing that path would mean
+/// teaching it to recognize a second, incompatible heading grammar and a
+/// second row grammar (single shared description column instead of one
+/// description per personality group); a focused parser is clearer than
+/// contorting the existing one to serve two different table shapes.
+///
+/// Same start-end separator class used elsewhere in this file (dash
+/// variants, arrows, 'ó', and U+F0F3 — the two glyphs PDF.js's text layer
+/// resolves a particular Chauvet symbol-font's separator glyph to,
+/// depending on the PDF's embedded font/ToUnicode map; poppler's pdftotext
+/// leaves the same glyph unresolved as the raw PUA codepoint, which is why
+/// a `pdftotext -layout` dump and the in-app PDF.js pipeline can disagree
+/// here for the same PDF) instead of plain whitespace, since that glyph is
+/// what actually separates the two value numbers in this table family.
+const _rangeSeparatorClass = '[-–—↔⇔ó]';
+
+/// A mode-matrix row's leading per-mode position cell: either a channel
+/// number or a dash meaning "this function does not exist in this mode".
+/// Shared between [_parseModeMatrixSection]'s row grammar and
+/// [_mergeSplitMatrixRows]'s line-rejoining pass so the two agree on what
+/// counts as a bare position token.
+const _matrixTokenPattern = r'(?:\d{1,3}|[-–—])';
+
+List<_DetectedModeTable> _modeMatrixTables(String text) {
+  final headerPattern = RegExp(
+    r'^[ \t]*((?:\d{1,3}\s*-?\s*Ch\b[ \t]*){2,})Function\b',
+    caseSensitive: false,
+    multiLine: true,
+  );
+  final matches = headerPattern.allMatches(text).toList();
+  if (matches.isEmpty) return const [];
+  List<int> countsOf(RegExpMatch match) => RegExp(
+    r'(\d{1,3})\s*-?\s*Ch\b',
+    caseSensitive: false,
+  ).allMatches(match.group(1)!).map((m) => int.parse(m.group(1)!)).toList();
+
+  final tables = <_DetectedModeTable>[];
+  var index = 0;
+  while (index < matches.length) {
+    final counts = countsOf(matches[index]);
+    if (counts.length < 2) {
+      index++;
+      continue;
+    }
+    // A repeated header with the same column sizes (a page-break
+    // continuation) extends the current section instead of starting a new
+    // table; a header with different column sizes starts a new table.
+    var next = index + 1;
+    while (next < matches.length &&
+        _sameCounts(countsOf(matches[next]), counts)) {
+      next++;
+    }
+    final sectionEnd = next < matches.length
+        ? matches[next].start
+        : text.length;
+    final section = text.substring(matches[index].end, sectionEnd);
+    tables.addAll(_parseModeMatrixSection(section, counts));
+    index = next;
+  }
+  return tables;
+}
+
+bool _sameCounts(List<int> a, List<int> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+class _MatrixRow {
+  _MatrixRow({
+    required this.tokens,
+    required this.description,
+    required this.ranges,
+    required this.mergeable,
+  });
+  final List<int?> tokens;
+  String description;
+  final List<DmxRange> ranges;
+  final bool mergeable;
+  bool merged = false;
+}
+
+/// Rejoins a channel-row whose leading mode-position tokens PDF.js's
+/// `positionedText()` split across two physical lines. This happens when a
+/// channel's row is tall (it carries several stacked value ranges) and one
+/// of its position cells — typically a lone dash meaning "this function
+/// does not exist in this mode" — sits at a slightly different vertical
+/// center than the rest of that row's cells, so the ±2–5pt y-tolerance
+/// grouping puts it in its own row. For example Sentinel_Wash_Q7Z_ILS's
+/// channel 14 row prints as a bare "–" line followed by
+/// "14 Movement macros   120 ó 135 Movement macro 8" on the next line,
+/// instead of one "– 14 Movement macros ..." line.
+///
+/// Detects a line made up solely of 1..columnCount-1 bare position tokens
+/// (dash or number, no other text) and, if the next non-blank/
+/// non-furniture line starts with exactly the remaining tokens the row
+/// needs, splices the two into one logical line so [_parseModeMatrixSection]'s
+/// row grammar sees a normal, complete row. Requires every combined token to
+/// be a plausible position in its mode (same check [_parseModeMatrixSection]
+/// applies to a whole-line row match) before committing to the splice, so an
+/// unrelated short line — a stray page number, for instance — followed by
+/// ordinary prose can't get spliced into a bogus row.
+List<String> _mergeSplitMatrixRows(List<String> lines, List<int> counts) {
+  final columnCount = counts.length;
+  final bareTokensLine = RegExp(
+    '^(?:$_matrixTokenPattern[ \\t]+)*$_matrixTokenPattern\$',
+  );
+  final tokenMatcher = RegExp(_matrixTokenPattern);
+  final merged = <String>[];
+  var index = 0;
+  while (index < lines.length) {
+    final trimmed = lines[index].trim();
+    final leadTokens = trimmed.isEmpty || !bareTokensLine.hasMatch(trimmed)
+        ? null
+        : tokenMatcher.allMatches(trimmed).toList();
+    if (leadTokens != null && leadTokens.length < columnCount) {
+      var next = index + 1;
+      while (next < lines.length) {
+        final nextTrimmed = lines[next].trim();
+        if (nextTrimmed.isEmpty ||
+            nextTrimmed.startsWith('=== DMXTRACT PAGE') ||
+            _looksLikePageFurniture(nextTrimmed)) {
+          next++;
+          continue;
+        }
+        break;
+      }
+      final needed = columnCount - leadTokens.length;
+      final prefixPattern = RegExp(
+        '^[ \\t]*(?:$_matrixTokenPattern[ \\t]+){${needed - 1}}'
+        '$_matrixTokenPattern(?=[ \\t]|\$)',
+      );
+      final prefixMatch = next < lines.length
+          ? prefixPattern.firstMatch(lines[next])
+          : null;
+      if (prefixMatch != null) {
+        final combined = [
+          ...leadTokens.map((m) => int.tryParse(m.group(0)!)),
+          ...tokenMatcher
+              .allMatches(prefixMatch.group(0)!)
+              .map((m) => int.tryParse(m.group(0)!)),
+        ];
+        var plausible = true;
+        for (var position = 0; position < combined.length; position++) {
+          final value = combined[position];
+          if (value != null && (value < 1 || value > counts[position])) {
+            plausible = false;
+            break;
+          }
+        }
+        if (plausible) {
+          merged.add('$trimmed ${lines[next].trimLeft()}');
+          index = next + 1;
+          continue;
+        }
+      }
+    }
+    merged.add(lines[index]);
+    index++;
+  }
+  return merged;
+}
+
+List<_DetectedModeTable> _parseModeMatrixSection(
+  String section,
+  List<int> counts,
+) {
+  final columnCount = counts.length;
+  final rowPattern = RegExp(
+    '^[ \\t]*((?:$_matrixTokenPattern[ \\t]+){${columnCount - 1}}'
+    '$_matrixTokenPattern)(?:[ \\t]+(.+?))?[ \\t]*\$',
+  );
+  final tokenMatcher = RegExp(_matrixTokenPattern);
+  // The same "start-end" separator class used throughout the file (dash
+  // variants, arrows, and 'ó' — the character PDF.js resolves a particular
+  // Chauvet PDF font's separator glyph to) rather than plain whitespace,
+  // since that glyph — not extra spacing — is what actually sits between
+  // the two value numbers in this table family.
+  final twoNumberValue = RegExp(
+    '^[ \\t]*(\\d{1,3})\\s*$_rangeSeparatorClass\\s*(\\d{1,3})[ \\t]+(.+?)[ \\t]*\$',
+  );
+  final oneNumberValue = RegExp(r'^[ \t]*(\d{1,3})[ \t]+(.+?)[ \t]*$');
+  final columnSplit = RegExp(r'[ \t]{2,}');
+
+  // The header declares exactly how many channels each mode has, so once
+  // we've matched a row at the highest declared position of the widest mode
+  // and filled its ranges to full 0-255 coverage, the table is provably
+  // complete — see the `finalRow` check below, which bounds the section
+  // instead of letting it run unbounded to the header search's fallback of
+  // "rest of the document" and sweep up trailing prose/footers as ranges.
+  final maxCount = counts.reduce((a, b) => a > b ? a : b);
+  final maxIndex = counts.indexOf(maxCount);
+  _MatrixRow? finalRow;
+
+  final rows = <_MatrixRow>[];
+  _MatrixRow? currentRow;
+  var pendingRanges = <DmxRange>[];
+  String? pendingFunction;
+  var expectMergeRange = false;
+
+  final lines = _mergeSplitMatrixRows(
+    section.split(RegExp(r'\r\n|\r|\n')),
+    counts,
+  );
+  for (final rawLine in lines) {
+    final trimmed = rawLine.trim();
+    if (trimmed.isEmpty ||
+        trimmed.startsWith('=== DMXTRACT PAGE') ||
+        _looksLikePageFurniture(trimmed)) {
+      continue;
+    }
+
+    final rowMatch = rowPattern.firstMatch(rawLine);
+    final rowTokens = rowMatch == null
+        ? null
+        : tokenMatcher
+              .allMatches(rowMatch.group(1)!)
+              .map((m) => int.tryParse(m.group(0)!))
+              .toList();
+    // A line of `columnCount` dash/digit tokens is only really a channel
+    // row if every non-dash token is a plausible position in its mode — a
+    // value line like "001 – 250 Automatic program" tokenizes the same way
+    // ([1, null, 250] for a 3Ch/12Ch/28Ch header) whenever the manual's
+    // separator glyph happens to be one of the dash variants this class
+    // also treats as a row-token placeholder, but 250 exceeds every mode's
+    // declared channel count, so it belongs to the value grammar below
+    // instead. Rejecting it here — rather than only when assigning parsed
+    // positions to modes afterward — matters because accepting it would
+    // otherwise consume `pendingRanges`/`pendingFunction` and become
+    // `currentRow`, silently swallowing the real row that should have.
+    var rowPlausible = rowTokens != null;
+    if (rowTokens != null) {
+      for (var i = 0; i < columnCount; i++) {
+        final value = rowTokens[i];
+        if (value != null && (value < 1 || value > counts[i])) {
+          rowPlausible = false;
+          break;
+        }
+      }
+    }
+    if (rowMatch != null && rowTokens != null && rowPlausible) {
+      final tokens = rowTokens;
+      final restRaw = (rowMatch.group(2) ?? '').trim();
+      expectMergeRange = false;
+      if (restRaw.isEmpty) {
+        // A channel-row with no inline text: its function label lives on a
+        // preceding standalone line (the common shape for a channel whose
+        // function depends on another channel's value, e.g. "Program speed"
+        // printed above a blank row for the channel it belongs to).
+        final description = pendingFunction ?? '';
+        final ranges = <DmxRange>[...pendingRanges];
+        pendingRanges = [];
+        pendingFunction = null;
+        currentRow = _MatrixRow(
+          tokens: tokens,
+          description: description,
+          ranges: ranges,
+          mergeable: true,
+        );
+      } else {
+        // The wide gap pdftotext/positionedText insert between real table
+        // columns (>=2 spaces) separates the function name from an inline
+        // value range; a plain function name with no digits has no such gap.
+        final split = restRaw.split(columnSplit);
+        final namePart = _cleanFunction(split.first);
+        final inlineRange = split.length > 1
+            ? _matrixInlineRange(split.sublist(1).join('   '))
+            : null;
+        final ranges = <DmxRange>[...pendingRanges, ?inlineRange];
+        pendingRanges = [];
+        pendingFunction = null;
+        currentRow = _MatrixRow(
+          tokens: tokens,
+          description: namePart,
+          ranges: ranges,
+          mergeable: false,
+        );
+      }
+      rows.add(currentRow);
+      if (finalRow == null &&
+          tokens.length > maxIndex &&
+          tokens[maxIndex] == maxCount) {
+        finalRow = currentRow;
+      }
+      if (identical(currentRow, finalRow) &&
+          _rangesCoverFull(currentRow.ranges)) {
+        // This row's own inline range (or the pending ranges gathered
+        // ahead of it) already covers 0-255 by itself — e.g. a plain
+        // "Full range" channel with no follow-up value lines — so the
+        // table is complete right away; see the fuller explanation above
+        // `finalRow`'s declaration.
+        break;
+      }
+      continue;
+    }
+
+    int? valueStart;
+    int? valueEnd;
+    String? valueDescription;
+    final two = twoNumberValue.firstMatch(rawLine);
+    if (two != null) {
+      final start = int.tryParse(two.group(1)!);
+      final end = int.tryParse(two.group(2)!);
+      if (start != null && end != null && start <= end && end <= 255) {
+        valueStart = start;
+        valueEnd = end;
+        valueDescription = two.group(3);
+      }
+    }
+    if (valueStart == null) {
+      final one = oneNumberValue.firstMatch(rawLine);
+      if (one != null) {
+        final start = int.tryParse(one.group(1)!);
+        if (start != null && start <= 255) {
+          valueStart = start;
+          valueEnd = start;
+          valueDescription = one.group(2);
+        }
+      }
+    }
+    if (valueStart != null) {
+      final range = _matrixRange(valueStart, valueEnd!, valueDescription ?? '');
+      final target = currentRow;
+      if (expectMergeRange && target != null) {
+        // The range immediately following a merged alternate-function label
+        // belongs to that alternate function, even though the channel's
+        // ranges already cover 0-255 from its first function.
+        target.ranges.add(range);
+        expectMergeRange = false;
+      } else if (target != null && !_rangesCoverFull(target.ranges)) {
+        // A leading or trailing range line with no row of its own extends
+        // whichever channel isn't fully covered yet — the same convention
+        // _parseTableSection uses for ranges that precede or follow a row.
+        target.ranges.add(range);
+      } else {
+        pendingRanges.add(range);
+        continue;
+      }
+      if (identical(target, finalRow) && _rangesCoverFull(target.ranges)) {
+        // The row we just extended is the last channel of this table's
+        // widest mode (see `finalRow` above) and its ranges now cover the
+        // full 0-255 span, so the table is provably complete — nothing
+        // legitimately printed after this row belongs to it. Stopping here
+        // keeps trailing manual content (the next prose section, page
+        // footers, an appendix) from being swept in as bogus ranges on
+        // whichever channel happened to be open when they were consumed.
+        break;
+      }
+      continue;
+    }
+
+    if (_looksLikeMatrixFunctionLabel(trimmed)) {
+      final label = _cleanFunction(trimmed);
+      if (currentRow != null && currentRow.mergeable) {
+        // A second bare label after a blank-inline row is this fixture's way
+        // of printing an alternate function for the same DMX channel; fold
+        // it into a combined name rather than treating it as a new channel.
+        currentRow.description = currentRow.description.isEmpty
+            ? label
+            : '${currentRow.description} / $label';
+        currentRow.merged = true;
+        expectMergeRange = true;
+      } else {
+        pendingFunction ??= label;
+      }
+    }
+  }
+
+  final parsedByMode = List<Map<int, _DetectedChannel>>.generate(
+    columnCount,
+    (_) => <int, _DetectedChannel>{},
+  );
+  for (final row in rows) {
+    if (row.description.isEmpty) continue;
+    final definition = _classifyTableChannel(row.description, 1);
+    final name = row.merged ? row.description : definition.name;
+    for (var modeIndex = 0; modeIndex < columnCount; modeIndex++) {
+      final position = row.tokens[modeIndex];
+      if (position == null || position < 1 || position > counts[modeIndex]) {
+        continue;
+      }
+      parsedByMode[modeIndex].putIfAbsent(
+        position,
+        () => _DetectedChannel(
+          name: name,
+          kind: definition.kind,
+          fineOf: definition.fineOf,
+          color: definition.color,
+          ranges: List<DmxRange>.of(row.ranges),
+          confidence: definition.confidence,
+        ),
+      );
+    }
+  }
+
+  return [
+    for (var modeIndex = 0; modeIndex < columnCount; modeIndex++)
+      _DetectedModeTable(
+        code: '${counts[modeIndex]}Ch',
+        channelCount: counts[modeIndex],
+        parsedCount: parsedByMode[modeIndex].length,
+        channels: [
+          for (var position = 1; position <= counts[modeIndex]; position++)
+            parsedByMode[modeIndex][position] ??
+                _DetectedChannel(
+                  name: 'Channel $position',
+                  kind: 'generic',
+                  confidence: .25,
+                ),
+        ],
+      ),
+  ];
+}
+
+/// Parses an inline "000 ó 255 description" value that follows a function
+/// name on the same physical row (used by e.g. "Red 1 ... 000 ó 255 0-100%").
+DmxRange? _matrixInlineRange(String value) {
+  final match = RegExp(
+    '^[ \\t]*(\\d{1,3})\\s*$_rangeSeparatorClass\\s*(\\d{1,3})'
+    '(?:[ \\t]+(.+?))?[ \\t]*\$',
+  ).firstMatch(value);
+  if (match == null) return null;
+  final start = int.tryParse(match.group(1)!);
+  final end = int.tryParse(match.group(2)!);
+  if (start == null || end == null || start > end || end > 255) return null;
+  return _matrixRange(start, end, match.group(3) ?? '');
+}
+
+/// Range name/safety inference shared by [_parseModeMatrixSection]'s two
+/// range-building shapes — this inline "name ... 000 sep 255 text" row shape
+/// ([_matrixInlineRange]) and the standalone "000 sep 255 text" value-line
+/// shape — so a capability doesn't end up unsafe-by-default, or literally
+/// named after a bare percentage like "0-100%", just because of which of
+/// the two physical line shapes the manual happened to print it as. Channel
+/// `kind` (which would let this defer to [_rangesFromLine]'s richer,
+/// kind-aware fallback naming) isn't known yet at this point in the
+/// matrix parse — classification only runs once a row's full description is
+/// assembled — so this sticks to the text-only signals both call sites
+/// already had available.
+DmxRange _matrixRange(int start, int end, String rawName) {
+  final name = _cleanFunction(rawName);
+  final lower = name.toLowerCase();
+  final isBarePercent = RegExp(
+    r'^\d{1,3}(?:\.\d+)?\s*[-–—↔⇔]\s*\d{1,3}(?:\.\d+)?%$',
+  ).hasMatch(name);
+  return DmxRange(
+    start: start,
+    end: end,
+    name: name.isEmpty || isBarePercent ? 'Full range' : name,
+    safety: lower.contains('strobe') && !lower.contains('no function')
+        ? 'strobe'
+        : 'normal',
+    confidence: .9,
+  );
+}
+
+bool _looksLikeMatrixFunctionLabel(String value) {
+  if (value.isEmpty || value.length > 60) return false;
+  if (value.startsWith('(')) return false;
+  // Real function labels in this table family are plain words ("Program
+  // speed", "Motor rotation"); anything with a digit is either a value line
+  // we already handled or page furniture (a title/revision/page number).
+  if (RegExp(r'\d').hasMatch(value)) return false;
+  if (_looksLikePageFurniture(value)) return false;
+  if (RegExp(
+    r'^(?:function|value|percent|setting|channel)\b',
+    caseSensitive: false,
+  ).hasMatch(value)) {
+    return false;
+  }
+  return RegExp(r'[A-Za-z]').hasMatch(value);
+}
+
 List<_DetectedModeTable> _codedChannelTables(String text) {
   final heading = RegExp(
     r'^\s*([A-Z]{0,3}\s*\d{1,3}\s*[A-Z]{0,3})\s+(Channel|Ch[a-z!]{2,10})\s+(Table|[TVLI]able|Tab[a-z])\b',
@@ -1546,11 +2051,11 @@ _DetectedModeTable _parseCodedMode(
 ) {
   final parsed = <int, _DetectedChannel>{};
   final row = RegExp(
-    r'^\s*(\d{1,3})\s+(\d{1,3})\s*[-–—↔⇔ó]\s*(\d{1,3})\s+(.+?)\s*$',
+    '^\\s*(\\d{1,3})\\s+(\\d{1,3})\\s*$_rangeSeparatorClass\\s*(\\d{1,3})\\s+(.+?)\\s*\$',
   );
   final rowWithoutRange = RegExp(r'^\s*(\d{1,3})\s+([A-Za-z].+?)\s*$');
   final continuation = RegExp(
-    r'^\s*(\d{1,3})\s*[-–—↔⇔ó]\s*(\d{1,3})\s+(.+?)\s*$',
+    '^\\s*(\\d{1,3})\\s*$_rangeSeparatorClass\\s*(\\d{1,3})\\s+(.+?)\\s*\$',
   );
 
   for (final section in sections) {
@@ -2004,10 +2509,19 @@ String _cleanFunction(String value) {
   return cleaned;
 }
 
-bool _looksLikePageFurniture(String value) => RegExp(
-  r'^(page|p\.?\s*\d|rev(?:ision)?|user manual|contents?)\b',
-  caseSensitive: false,
-).hasMatch(value);
+bool _looksLikePageFurniture(String value) =>
+    RegExp(
+      r'^(page|p\.?\s*\d|rev(?:ision)?|user manual|contents?)\b',
+      caseSensitive: false,
+    ).hasMatch(value) ||
+    // A running header/footer ("Rotosphere HP User Manual Rev. 1", or the
+    // same text with a page number printed ahead of it on the facing page:
+    // "8   Rotosphere HP User Manual Rev. 1") repeats the manual's title —
+    // the prefix check above only catches it when that phrase leads the
+    // line, so also catch it anywhere for callers (like the mode-matrix
+    // parser's value-line grammar) that hand this a description with a
+    // leading page number or product name already split off.
+    RegExp(r'\buser\s+manual\b', caseSensitive: false).hasMatch(value);
 
 String _relationshipKey(_DetectedChannel channel) {
   if (channel.kind == 'colorIntensity') {
@@ -2135,7 +2649,9 @@ List<_DetectedChannel> _parseTableSection(String section, int count) {
 
 List<DmxRange> _rangesFromLine(String value, String channelName, String kind) {
   final ranges = <DmxRange>[];
-  final pattern = RegExp(r'\b(\d{1,3})\s*[-–—↔⇔ó]\s*(\d{1,3})\b');
+  final pattern = RegExp(
+    '\\b(\\d{1,3})\\s*$_rangeSeparatorClass\\s*(\\d{1,3})\\b',
+  );
   for (final match in pattern.allMatches(value)) {
     final start = int.tryParse(match.group(1)!);
     final end = int.tryParse(match.group(2)!);
@@ -2143,7 +2659,10 @@ List<DmxRange> _rangesFromLine(String value, String channelName, String kind) {
     final trailing = value.substring(match.end).trim();
     if (trailing.startsWith('%')) continue;
     var label = trailing
-        .replaceFirst(RegExp(r'^\d{1,3}\s*[-–—↔⇔ó]\s*\d{1,3}%\s*'), '')
+        .replaceFirst(
+          RegExp('^\\d{1,3}\\s*$_rangeSeparatorClass\\s*\\d{1,3}%\\s*'),
+          '',
+        )
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
     if (label.isEmpty || RegExp(r'^\d{1,3}%$').hasMatch(label)) {
@@ -2185,7 +2704,10 @@ bool _rangesCoverFull(List<DmxRange> ranges) {
 
 _DetectedChannel _classifyTableChannel(String value, int channel) {
   final withoutModeColumns = value
-      .replaceFirst(RegExp(r'^\d{1,3}\s*[-–—↔⇔ó]\s*\d{1,3}\s+'), '')
+      .replaceFirst(
+        RegExp('^\\d{1,3}\\s*$_rangeSeparatorClass\\s*\\d{1,3}\\s+'),
+        '',
+      )
       .replaceFirst(RegExp(r'^(?:(?:\d{1,3}|-)\s+){1,6}'), '');
   final lower = withoutModeColumns.toLowerCase().replaceAll('_', ' ');
   String? numberedSuffix(String label) => RegExp(
@@ -2489,7 +3011,10 @@ _DetectedChannel _classifyTableChannel(String value, int channel) {
     }
   }
   final cleaned = withoutModeColumns
-      .replaceAll(RegExp(r'\b\d{1,3}\s*[-–—↔⇔ó]\s*\d{1,3}\b.*$'), '')
+      .replaceAll(
+        RegExp('\\b\\d{1,3}\\s*$_rangeSeparatorClass\\s*\\d{1,3}\\b.*\$'),
+        '',
+      )
       .replaceAll(RegExp(r'^[-–—\s]+'), '')
       .trim();
   return _DetectedChannel(
