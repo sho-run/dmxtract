@@ -799,6 +799,10 @@ class _NetworkNodeConnect extends StatelessWidget {
                   icon: Icons.download_outlined,
                 ),
               ),
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: _LaunchBridgeAffordance(state: state),
+              ),
               const Padding(
                 padding: EdgeInsets.only(top: 8),
                 child: _BridgeOsPrimingPanel(),
@@ -1026,6 +1030,94 @@ class _BridgeOsPrimingPanel extends StatelessWidget {
           ],
         ),
       ),
+    ],
+  );
+}
+
+/// "Launch bridge" affordance shown alongside "Open the helper app first"
+/// while the bridge isn't answering its health check. Hands the
+/// `dmxtract://open` custom-scheme URL to the OS via a top-level
+/// `window.location.href` assignment — the standard way to trigger a
+/// registered protocol handler. An unhandled custom scheme does not
+/// navigate the page away in any current browser, so this is safe to do
+/// in place (unlike a same-tab `window.open()`, which is routinely
+/// popup-blocked for schemes the browser doesn't recognize). A hidden
+/// iframe's `src` was tried here before, but WebKit only hands a custom
+/// scheme to the OS from a top-level navigation — a subframe navigation is
+/// silently ignored, so it never fired at all on Safari.
+///
+/// A browser has no way to tell whether a custom scheme is actually
+/// registered, so this never claims success up front. It starts polling
+/// the same health check the "Find bridge" button uses — so the status
+/// flips to running on its own if the app did come up — and only shows the
+/// "nothing happened" fallback once that polling gives up without seeing
+/// the bridge, not the instant the button is clicked.
+class _LaunchBridgeAffordance extends StatefulWidget {
+  const _LaunchBridgeAffordance({required this.state});
+  final DmxtractState state;
+
+  @override
+  State<_LaunchBridgeAffordance> createState() =>
+      _LaunchBridgeAffordanceState();
+}
+
+class _LaunchBridgeAffordanceState extends State<_LaunchBridgeAffordance> {
+  static const _maxPolls = 5;
+  static const _pollInterval = Duration(seconds: 2);
+
+  bool _launched = false;
+  bool _gaveUp = false;
+  Timer? _poll;
+  int _pollsLeft = 0;
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  void _launch() {
+    web.window.location.href = 'dmxtract://open';
+
+    setState(() {
+      _launched = true;
+      _gaveUp = false;
+    });
+    _poll?.cancel();
+    _pollsLeft = _maxPolls;
+    _poll = Timer.periodic(_pollInterval, (timer) {
+      if (!mounted || widget.state.bridgeAvailable) {
+        timer.cancel();
+        return;
+      }
+      if (--_pollsLeft <= 0) {
+        timer.cancel();
+        setState(() => _gaveUp = true);
+        return;
+      }
+      unawaited(widget.state.refreshBridgeAvailability());
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      OutlinedButton.icon(
+        onPressed: _launch,
+        icon: const Icon(Icons.rocket_launch_outlined),
+        label: const Text('Launch bridge'),
+      ),
+      if (_launched) ...[
+        const SizedBox(height: 8),
+        Text(
+          _gaveUp
+              ? 'Nothing happened? The helper app may not be installed yet '
+                    '— see "Open the helper app first" above.'
+              : 'Waiting for the bridge…',
+          style: const TextStyle(color: DmxColors.muted, fontSize: 13),
+        ),
+      ],
     ],
   );
 }

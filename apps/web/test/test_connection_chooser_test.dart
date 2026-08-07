@@ -120,6 +120,45 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets(
+      'Network node not-running state offers a "Launch bridge" affordance',
+      (tester) async {
+        await pumpTestStep(tester);
+
+        await tester.tap(find.text('Network node (Art-Net / sACN)'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Bridge not running'), findsOneWidget);
+        expect(find.text('Launch bridge'), findsOneWidget);
+        // Quiet fallback line only shows after polling gives up, not up
+        // front — the browser can never confirm the custom scheme is
+        // registered, so nothing here may claim failure before the health
+        // check has even had a chance to see the bridge come up.
+        expect(find.textContaining('Nothing happened?'), findsNothing);
+
+        await tester.ensureVisible(find.text('Launch bridge'));
+        await tester.tap(find.text('Launch bridge'));
+        await tester.pump();
+
+        // Immediately after the click it's still just "waiting" — the
+        // "nothing happened" line only appears once the affordance's
+        // polling gives up (see below), not on the same frame as the click.
+        expect(find.textContaining('Waiting for the bridge'), findsOneWidget);
+        expect(find.textContaining('Nothing happened?'), findsNothing);
+        expect(tester.takeException(), isNull);
+
+        // Leave the card before the affordance's polling Timer.periodic
+        // (first tick at 2s) ever fires, so its dispose() cancels the timer
+        // instead of this test making a real network call to the bridge
+        // health check or leaving a pending timer at teardown.
+        await tester.ensureVisible(find.text('Change connection'));
+        await tester.tap(find.text('Change connection'));
+        await tester.pumpAndSettle();
+        expect(find.text('How is your light connected?'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
     group('manual console flow (card 3)', () {
       testWidgets('starts with the download-profile prompt', (tester) async {
         await pumpTestStep(tester);

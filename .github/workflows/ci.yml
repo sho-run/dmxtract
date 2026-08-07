@@ -46,6 +46,15 @@ jobs:
       - run: dart format --output=none --set-exit-if-changed lib test
       - run: flutter analyze
       - run: flutter test
+      # @TestOn('browser') files (mobile_layout_test.dart,
+      # test_connection_chooser_test.dart) are silently skipped by the
+      # VM-platform run above — `flutter test` alone reports success without
+      # ever executing them. Run them explicitly under Chrome so they
+      # actually gate CI.
+      - run: >-
+          flutter test --platform chrome
+          test/mobile_layout_test.dart
+          test/test_connection_chooser_test.dart
       - run: flutter build web --release
       - run: mkdir -p build/web/schemas && cp ../../schemas/fixture-v1.json build/web/schemas/fixture-v1.json
       - run: node ../../scripts/check-static-links.mjs build/web
