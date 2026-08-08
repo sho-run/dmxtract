@@ -14,12 +14,29 @@ their original licenses.
 | Tesseract.js / Tesseract | Local OCR | Apache License 2.0 |
 | pyGDTF AttributeDefinitions.xml | GDTF 1.2 channel-type catalog | MIT |
 | Open Lighting Architecture | Optional macOS DMX transport | LGPL-2.1-or-later; bundled source and build records required |
+| libheif-js (libheif wasm build) | Local HEIC/HEIF photo decoding | LGPL-3.0; bundled unmodified as a dynamically-loaded runtime library, source at https://github.com/catdad-experiments/libheif-js |
 
 The sho.run name appears only as project attribution, copyright holder,
 repository owner, and canonical host. No sho.run logo artwork, private product
 source, copied design tokens, service credentials, or private fixture data are
 bundled. DMXtract's icon and application palette were independently authored
 for this repository.
+
+`apps/web/web/vendor/heic/libheif.js` and `libheif.wasm` are the unmodified
+"wasm" build of `libheif-js` (an Emscripten build of the LGPL-3.0-licensed
+`libheif`/`libde265` C++ libraries). They are loaded lazily at runtime by
+`manual_extractor.js` — only when a photo's bytes sniff as HEIC — never
+statically linked or bundled into DMXtract's own MIT-licensed JS, so the app
+source itself carries no copyleft obligation; the vendored files retain their
+own LGPL-3.0 license and are kept byte-for-byte as published on npm, so
+recipients can rebuild or substitute them from the upstream source. Other
+candidates were considered and rejected: `@discourse/heic` (a jSquash
+package) lists Apache-2.0 on npm but its own README states it wraps this same
+`libheif`/`libde265` pair, so the Apache-2.0 tag covers only the JS wrapper,
+not the wasm binary — using it would have recorded the license inaccurately.
+No permissively-licensed (MIT/BSD/Apache) HEIC/HEVC decoder is known to exist,
+since HEVC decoding is otherwise only available from copyleft or
+patent-licensed implementations.
 
 Exact notices for the bundled fonts, PDF.js, Tesseract.js, and Tesseract core
 are stored in `third_party/licenses/`. Before distributing a signed bridge,
