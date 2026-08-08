@@ -1,4 +1,5 @@
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
+import { wordsFromRecognizeData } from './tesseract_words.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
 
@@ -298,8 +299,10 @@ function rotateCanvas(source, degrees) {
 // needs) this downscaled trial pass can read *better* than the full-size
 // pass that follows it, so the caller gets the option to keep it.
 async function quickOrientationScore(worker, canvas) {
-  const result = await worker.recognize(canvas);
-  const words = (result.data.words || []).filter(word => word.text && word.text.trim());
+  // blocks: true — see wordsFromRecognizeData in tesseract_words.js for why
+  // this is required to get any per-word data back at all.
+  const result = await worker.recognize(canvas, {}, { blocks: true });
+  const words = wordsFromRecognizeData(result.data).filter(word => word.text && word.text.trim());
   const totalConfidence = words.reduce((sum, word) => sum + (word.confidence || 0), 0);
   return {
     score: totalConfidence,
@@ -470,16 +473,26 @@ async function extractImage(bytes, mime) {
     const detection = await detectRotation(worker, canvas);
     const oriented = rotateCanvas(canvas, detection.rotation);
     announce('Reading the photo', 1, 1);
-    const result = await worker.recognize(oriented);
-    const words = (result.data.words || []).filter(word => word.text && word.text.trim());
+    const result = await worker.recognize(oriented, {}, { blocks: true });
+    const words = wordsFromRecognizeData(result.data).filter(word => word.text && word.text.trim());
     const fullScore = words.reduce((sum, word) => sum + (word.confidence || 0), 0);
-    // The orientation trial already OCR'd this same page (downscaled) to
-    // pick a rotation; on a very high-resolution phone photo that
-    // downscaled pass can score higher than this "real" full-size pass
-    // (measured on the corpus this rotation-detection lane targets), so
-    // keep whichever reading actually scored better instead of always
-    // discarding the trial's text.
-    const text = detection.score > fullScore ? detection.text : (result.data.text || '');
+    const fullText = result.data.text || '';
+    // Neither pass is reliably "better" everywhere: one can win on overall
+    // word count/confidence while still garbling the one heading a photo's
+    // mode-table detection depends on, even as the other pass reads that
+    // exact heading cleanly (measured on the real photos in testcorpus/ —
+    // e.g. the higher-scoring pass read a mode heading as unrecoverable
+    // noise while the lower-scoring pass read the same heading correctly,
+    // and vice versa on a different photo). Keep both instead of discarding
+    // either one, higher-scoring first — the same tolerance extractPdf's
+    // detailed-table pass already relies on ("Keep the broad, low-resolution
+    // pass as well. It is often better at headings while the detailed pass
+    // is better at individual table rows"): a duplicated or garbled repeat
+    // of a heading/row is harmless downstream since a second, legible
+    // instance of it still matches.
+    const text = detection.score > fullScore
+      ? `${detection.text}\n${fullText}`
+      : `${fullText}\n${detection.text}`;
     // previewUrl is null for HEIC (and any other browser-undecodable source
     // we fell back on) since Chrome cannot render those bytes in an <img>
     // even unrotated — always build the thumbnail from the decoded canvas

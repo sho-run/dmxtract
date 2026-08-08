@@ -1345,6 +1345,55 @@ DMX Channel Assignments and Values
     );
   });
 
+  test('recovers a sequential-mode heading with no gutter glyph at all, '
+      'just a plain space, as browser-side Tesseract actually read it', () {
+    // The "| " / "; " gutter glyph the previous test models is what the
+    // reference OCR harness (tesseract.js@5.1.1 in Node) happened to
+    // produce for this exact corpus photo. The live site's vendored
+    // Tesseract.js build read the very same two-column gutter as nothing
+    // more than an ordinary single space — no glyph survives to anchor a
+    // heading-position regex on at all:
+    //   "...infinite rotation 42-channel mode"   (captured from IMG_9381)
+    //   "...adjust 58-channel mode"               (captured from IMG_9382)
+    // Both excerpts below are short, hand-trimmed snippets of those real
+    // captures, not bulk OCR dumps.
+    final manual =
+        '4. DMX Channel Table\n'
+        '30-channel mode\n'
+        'Channel Function DMX Value Functional Description\n'
+        '1 X-axis 0-255 0-540 degrees\n'
+        '193-255 Counterclockwise infinite rotation 42-channel mode\n'
+        'Channel Function DMX Value Functional Description\n'
+        '1 Red Dimming 0-255 Red intensity\n'
+        '15 Horizontal fine adjust 58-channel mode\n'
+        'Channel Function DMX Value Functional Description\n'
+        '1 X-axis 0-255 0-540 degrees\n';
+    final result = fixtureFromManualText(manual, 'noname_no_gutter_glyph.pdf');
+    expect(
+      result.fixture.modes.map((mode) => mode.channelIds.length).toList(),
+      [30, 42, 58],
+    );
+  });
+
+  test('does not double a channel range when the same row is read twice '
+      '(extractImage() now keeps both of a photo\'s OCR passes instead of '
+      'discarding one, so duplicate rows are expected input)', () {
+    final manual =
+        '4. DMX Channel Table\n'
+        '30-channel mode\n'
+        'Channel Function DMX Value Functional Description\n'
+        '1 X-axis 0-255 0-540 degrees\n'
+        '1 X-axis 0-255 0-540 degrees\n'
+        '2 Y-axis 0-255 0-270 degrees\n';
+    final result = fixtureFromManualText(manual, 'noname_duplicated_pass.pdf');
+    final mode = result.fixture.modes.single;
+    final xAxis = result.fixture.channels.firstWhere(
+      (c) => c.id == mode.channelIds[0],
+    );
+    expect(xAxis.ranges, hasLength(1));
+    expect(xAxis.ranges.single.end, 255);
+  });
+
   test('merges a sequential-mode table whose heading repeats on a '
       'continuation page instead of dropping the rows that follow it', () {
     final b = StringBuffer()
