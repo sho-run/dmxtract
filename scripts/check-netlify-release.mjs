@@ -30,6 +30,8 @@ const requiredFiles = [
   "wasm/dmxtract_core_bg.wasm",
   "vendor/pdfjs/pdf.worker.min.mjs",
   "vendor/tesseract/worker.min.js",
+  "vendor/heic/libheif.js",
+  "vendor/heic/libheif.wasm",
   "schemas/fixture-v1.json",
 ];
 

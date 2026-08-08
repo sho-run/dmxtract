@@ -6,6 +6,130 @@ function announce(stage, page, pages) {
   window.dispatchEvent(new CustomEvent('dmxtract-progress', { detail: { stage, page, pages } }));
 }
 
+// iPhones shoot HEIC by default and Chrome cannot decode it via
+// createImageBitmap. The wasm HEIC decoder (vendor/heic/, ~1.1MB) is never
+// fetched on page load — only sniffHeicBytes() runs eagerly (a few dozen
+// bytes of arithmetic), and the decoder itself is loaded lazily the first
+// time a HEIC photo actually needs decoding. See THIRD_PARTY_NOTICES.md for
+// the licensing note (libheif-js, LGPL-3.0, used unmodified).
+const HEIC_FTYP_BRANDS = new Set([
+  'heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'hevm', 'hevs', 'mif1', 'msf1',
+]);
+
+// Sniff the ISO-BMFF 'ftyp' box rather than trusting the mime string: photos
+// forwarded from the phone hand-off (phone/phone.js) or picked from a file
+// input can arrive as 'application/octet-stream' regardless of their actual
+// content, and Chrome does not normalize HEIC mime types consistently.
+function sniffHeicBytes(bytes) {
+  if (!bytes || bytes.length < 12) return false;
+  const tag = offset => String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
+  if (tag(4) !== 'ftyp') return false;
+  const boxSize = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+  // The ftyp box is always small in practice; cap the scan so a malformed
+  // or unrelated file with a stray 'ftyp' tag can't force a long loop.
+  const limit = Math.min(bytes.length, boxSize > 0 ? boxSize : bytes.length, 512);
+  const brands = new Set([tag(8)]);
+  for (let offset = 16; offset + 4 <= limit; offset += 4) brands.add(tag(offset));
+  for (const brand of brands) if (HEIC_FTYP_BRANDS.has(brand)) return true;
+  return false;
+}
+
+let heifModulePromise = null;
+
+function loadHeifDecoderScript() {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    // Classic (non-module) script, matching how vendor/tesseract/tesseract.min.js
+    // is loaded: libheif-js's wasm build is UMD and only exposes the global
+    // `libheif` it needs when it is not evaluated as an ES module.
+    script.src = './vendor/heic/libheif.js';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Could not load the HEIC decoder.'));
+    document.head.appendChild(script);
+  });
+}
+
+async function heifModule() {
+  if (!heifModulePromise) {
+    heifModulePromise = (async () => {
+      if (!window.libheif) await loadHeifDecoderScript();
+      // The emscripten glue's default wasm loader falls back to a synchronous
+      // XHR, which Chrome refuses to compile on the main thread once the
+      // module is more than a few KB ("sync fetching of the wasm failed").
+      // Fetching the bytes ourselves and handing them over as `wasmBinary`
+      // keeps instantiation on the async (streaming-compile-eligible) path.
+      const wasmResponse = await fetch('./vendor/heic/libheif.wasm');
+      if (!wasmResponse.ok) throw new Error('Could not load the HEIC decoder.');
+      const wasmBinary = new Uint8Array(await wasmResponse.arrayBuffer());
+      const factory = window.libheif;
+      const instance = factory({ wasmBinary, locateFile: path => `./vendor/heic/${path}` });
+      return (instance && typeof instance.then === 'function') ? await instance : instance;
+    })();
+  }
+  return heifModulePromise;
+}
+
+async function decodeHeicToCanvas(bytes) {
+  const libheif = await heifModule();
+  const decoder = new libheif.HeifDecoder();
+  const images = decoder.decode(bytes);
+  if (!images || !images.length) throw new Error('This HEIC photo has no readable image data.');
+  const image = images[0];
+  const width = image.get_width();
+  const height = image.get_height();
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  const imageData = context.createImageData(width, height);
+  await new Promise((resolve, reject) => {
+    image.display(imageData, displayData => {
+      if (!displayData) { reject(new Error('This HEIC photo could not be decoded.')); return; }
+      resolve();
+    });
+  });
+  context.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+// Decode photo bytes to a canvas, trying the browser's native decoder first
+// (fast path for JPEG/PNG/WebP/etc, including EXIF-orientation handling)
+// and falling back to the vendored HEIC decoder only when createImageBitmap
+// fails AND the bytes actually sniff as HEIC. `wantPreviewUrl` lets callers
+// skip creating an object URL they will not use (see renderSourcePage).
+async function decodeImageBytes(bytes, mime, { wantPreviewUrl = true } = {}) {
+  const blob = new Blob([bytes], { type: mime });
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(blob);
+  } catch (error) {
+    if (!sniffHeicBytes(bytes)) {
+      throw new Error(
+        `This browser could not decode the photo (${mime || 'unknown format'}). ` +
+          'HEIC photos are not supported yet — please retake or export as JPEG or PNG.',
+      );
+    }
+    try {
+      const canvas = await decodeHeicToCanvas(bytes);
+      // HEIC decodes to a canvas directly; there is no browser-renderable
+      // blob URL for it (Chrome cannot put HEIC bytes in an <img>), so the
+      // caller must always build its preview from this canvas.
+      return { canvas, previewUrl: null };
+    } catch (heicError) {
+      throw new Error(
+        'This HEIC photo could not be decoded. It may be corrupted or use an ' +
+          'unsupported HEIC variant — please retake or export as JPEG or PNG.',
+      );
+    }
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return { canvas, previewUrl: wantPreviewUrl ? URL.createObjectURL(blob) : null };
+}
+
 async function ocrWorker() {
   return window.Tesseract.createWorker('eng', 1, {
     workerPath: './vendor/tesseract/worker.min.js',
@@ -334,25 +458,12 @@ async function extractPdf(bytes) {
 
 async function extractImage(bytes, mime) {
   announce('Reading the photo', 1, 1);
-  const blob = new Blob([bytes], { type: mime });
   // Tesseract fetches URL inputs, and the site CSP (connect-src 'self')
   // rightly blocks blob: fetches — decode to a canvas ourselves instead,
-  // matching every other recognize() call site.
-  let bitmap;
-  try {
-    bitmap = await createImageBitmap(blob);
-  } catch (error) {
-    throw new Error(
-      `This browser could not decode the photo (${mime || 'unknown format'}). ` +
-        'HEIC photos are not supported yet — please retake or export as JPEG or PNG.',
-    );
-  }
-  const canvas = document.createElement('canvas');
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  canvas.getContext('2d').drawImage(bitmap, 0, 0);
-  bitmap.close();
-  const url = URL.createObjectURL(blob);
+  // matching every other recognize() call site. decodeImageBytes() also
+  // covers HEIC photos (iPhone default format), which createImageBitmap
+  // cannot decode natively.
+  const { canvas, previewUrl } = await decodeImageBytes(bytes, mime);
   const worker = await ocrWorker();
   try {
     announce('Checking photo orientation', 1, 1);
@@ -369,7 +480,11 @@ async function extractImage(bytes, mime) {
     // keep whichever reading actually scored better instead of always
     // discarding the trial's text.
     const text = detection.score > fullScore ? detection.text : (result.data.text || '');
-    const thumbnail = detection.rotation === 0 ? url : await canvasToThumbnail(oriented);
+    // previewUrl is null for HEIC (and any other browser-undecodable source
+    // we fell back on) since Chrome cannot render those bytes in an <img>
+    // even unrotated — always build the thumbnail from the decoded canvas
+    // in that case, same as the "photo needed rotating" path below.
+    const thumbnail = (previewUrl && detection.rotation === 0) ? previewUrl : await canvasToThumbnail(oriented);
     return {
       pageCount: 1,
       pages: [{ page: 1, text, rotation: detection.rotation }],
@@ -377,7 +492,7 @@ async function extractImage(bytes, mime) {
     };
   } finally {
     await worker.terminate();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    if (previewUrl) setTimeout(() => URL.revokeObjectURL(previewUrl), 30000);
   }
 }
 
@@ -392,12 +507,10 @@ async function renderSourcePage(bytes, mime, pageNumber, rotation) {
     await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
     return canvas;
   }
-  const bitmap = await createImageBitmap(new Blob([bytes], { type: mime }));
-  const canvas = document.createElement('canvas');
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  canvas.getContext('2d').drawImage(bitmap, 0, 0);
-  bitmap.close();
+  // Region re-reads (extractRegion, below) go through the same decode path
+  // as the initial extraction, including the HEIC fallback — no preview URL
+  // is needed here, so skip creating one.
+  const { canvas } = await decodeImageBytes(bytes, mime, { wantPreviewUrl: false });
   // extractImage() may have rotated this same photo to make it upright for
   // OCR (see detectRotation) — the region box the user draws is drawn over
   // that rotated thumbnail, so the crop source has to be rotated the same
