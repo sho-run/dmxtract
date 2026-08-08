@@ -567,6 +567,39 @@ class DmxtractState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Updates the fixture's manufacturer/model, e.g. from the pencil
+  /// affordance on the Check step's fixture-name header card. Blank fields
+  /// leave the corresponding value untouched (the editor prefills known
+  /// names and only leaves a field blank for an "Unknown…" placeholder, so a
+  /// blank submission just means the user didn't fill it in). Clears the
+  /// matching "could not find the maker/model name" help item once the
+  /// value no longer starts with "Unknown", same as [editChannel] clearing
+  /// its own channel question.
+  void editFixtureName(String manufacturer, String model) {
+    final project = fixture;
+    if (project == null) return;
+    final trimmedManufacturer = manufacturer.trim();
+    final trimmedModel = model.trim();
+    if (trimmedManufacturer.isEmpty && trimmedModel.isEmpty) return;
+    _record();
+    if (trimmedManufacturer.isNotEmpty) {
+      project.manufacturer = trimmedManufacturer;
+    }
+    if (trimmedModel.isNotEmpty) project.model = trimmedModel;
+    if (!project.manufacturer.startsWith('Unknown')) {
+      questions.removeWhere(
+        (item) => item == 'We could not find the maker name.',
+      );
+    }
+    if (!project.model.startsWith('Unknown')) {
+      questions.removeWhere(
+        (item) => item == 'We could not find the model name.',
+      );
+    }
+    _save();
+    notifyListeners();
+  }
+
   void markObservation(String observation) {
     lastObservation = observation;
     notifyListeners();

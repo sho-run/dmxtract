@@ -610,11 +610,16 @@ class FixtureSummaryCard extends StatelessWidget {
     required this.model,
     required this.modes,
     required this.controls,
+    this.onEdit,
   });
   final String manufacturer;
   final String model;
   final int modes;
   final int controls;
+
+  /// When set, shows a pencil icon button (same idiom as the "Edit channel"
+  /// button on the DMX table rows) that opens the fixture-name editor.
+  final VoidCallback? onEdit;
   @override
   Widget build(BuildContext context) => Card(
     child: Padding(
@@ -650,6 +655,12 @@ class FixtureSummaryCard extends StatelessWidget {
               ],
             ),
           ),
+          if (onEdit != null)
+            IconButton(
+              tooltip: 'Edit fixture name',
+              onPressed: onEdit,
+              icon: const Icon(Icons.edit_outlined),
+            ),
         ],
       ),
     ),
