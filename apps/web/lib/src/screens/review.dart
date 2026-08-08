@@ -3,6 +3,7 @@ import 'package:web/web.dart' as web;
 import '../app_state.dart';
 import '../channel_editor.dart';
 import '../components.dart';
+import '../fixture_name_editor.dart';
 import '../gdtf_lookup.dart';
 import '../model.dart';
 import '../theme.dart';
@@ -31,6 +32,7 @@ class ReviewScreen extends StatelessWidget {
           model: fixture.model,
           modes: fixture.modes.length,
           controls: fixture.maxModeChannelCount,
+          onEdit: () => showFixtureNameEditor(context, state),
         ),
         if (state.gdtfMatches.isNotEmpty) ...[
           const SizedBox(height: 18),
