@@ -14,6 +14,8 @@ apps/bridge/src-tauri/gen/schemas/
 .env.*
 !.env.example
 *.log
-testcorpus/*.pdf
+testcorpus/*
+!testcorpus/README.md
 tmp/
 node_modules/
+.serena/
