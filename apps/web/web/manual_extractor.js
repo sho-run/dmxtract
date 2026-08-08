@@ -288,26 +288,36 @@ function rotateCanvas(source, degrees) {
   return rotated;
 }
 
-// Score = sum of per-word OCR confidence (equivalently: mean confidence
-// weighted by word count). A photo at the wrong orientation typically yields
-// both fewer recognizable words AND lower per-word confidence than the same
-// photo upright, so summing rewards both signals and discriminates far more
-// reliably than mean confidence alone (which a rotation with 3 lucky-guess
-// words can win on) or word count alone (which noise-prone rotations can
-// pad with short garbage tokens). The recognized text is kept too: on a
-// typical phone photo (much higher resolution than the table actually
-// needs) this downscaled trial pass can read *better* than the full-size
-// pass that follows it, so the caller gets the option to keep it.
+// score = sum of per-word OCR confidence (equivalently: mean confidence
+// weighted by word count). Kept around because extractImage() compares it
+// directly against a same-units full-resolution-pass score to decide which
+// text to lead with — see the comment there.
+//
+// rankScore = mean confidence * sqrt(word count). This is what detectRotation
+// actually competes candidates on. A raw linear sum (score) is exploitable:
+// a wrong rotation that fragments a table grid into many short low-confidence
+// tokens can out-sum a correct rotation that reads fewer, longer, genuinely
+// high-confidence words (observed on testcorpus/IMG_9383 2.HEIC: the correct
+// 0deg reading scored 141 words at 56.6% confidence while the wrong 270deg
+// reading scored 423 words at 29.5% confidence — the wrong rotation's word
+// count nearly tripled the correct one's, and the linear sum let that win).
+// Weighting by sqrt(word count) instead of word count follows the usual
+// statistical logic for combining N noisy same-distribution samples: your
+// certainty in the estimate grows with sqrt(N), not N, so a rotation with 3x
+// the (mostly noise) words needs roughly 3x the confidence gap to outrank a
+// rotation with fewer, cleaner words, not merely a fractional edge in sum.
 async function quickOrientationScore(worker, canvas) {
   // blocks: true — see wordsFromRecognizeData in tesseract_words.js for why
   // this is required to get any per-word data back at all.
   const result = await worker.recognize(canvas, {}, { blocks: true });
   const words = wordsFromRecognizeData(result.data).filter(word => word.text && word.text.trim());
   const totalConfidence = words.reduce((sum, word) => sum + (word.confidence || 0), 0);
+  const meanConfidence = words.length ? totalConfidence / words.length : 0;
   return {
     score: totalConfidence,
+    rankScore: meanConfidence * Math.sqrt(words.length),
     wordCount: words.length,
-    meanConfidence: words.length ? totalConfidence / words.length : 0,
+    meanConfidence,
     text: result.data.text || '',
   };
 }
@@ -349,11 +359,11 @@ async function detectRotation(worker, canvas) {
       });
     }
   }
-  candidates.sort((a, b) => b.score - a.score);
+  candidates.sort((a, b) => b.rankScore - a.rankScore);
   let best = candidates[0];
   const runnerUp = candidates[1];
-  if (runnerUp && best.score > 0
-    && (best.score - runnerUp.score) / best.score < ORIENTATION_MARGIN_RATIO) {
+  if (runnerUp && best.rankScore > 0
+    && (best.rankScore - runnerUp.rankScore) / best.rankScore < ORIENTATION_MARGIN_RATIO) {
     const confirmBase = downscaleCanvas(canvas, ORIENTATION_CONFIRM_MAX_SIDE);
     const rescored = [];
     for (const candidate of [best, runnerUp]) {
@@ -362,7 +372,7 @@ async function detectRotation(worker, canvas) {
         ...(await quickOrientationScore(worker, rotateCanvas(confirmBase, candidate.rotation))),
       });
     }
-    best = rescored[0].score >= rescored[1].score ? rescored[0] : rescored[1];
+    best = rescored[0].rankScore >= rescored[1].rankScore ? rescored[0] : rescored[1];
   }
   return best;
 }
