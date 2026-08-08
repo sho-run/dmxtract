@@ -46,6 +46,7 @@ jobs:
       - run: dart format --output=none --set-exit-if-changed lib test
       - run: flutter analyze
       - run: flutter test
+      - run: node --test web/*.test.mjs
       # @TestOn('browser') files (mobile_layout_test.dart,
       # test_connection_chooser_test.dart) are silently skipped by the
       # VM-platform run above — `flutter test` alone reports success without

@@ -1940,14 +1940,21 @@ bool _looksLikeMatrixFunctionLabel(String value) {
 List<_DetectedModeTable> _sequentialModeTables(String text) {
   // A heading normally opens its own line, but a photographed two-column
   // spread OCRs with both columns run onto one physical line, landing a
-  // later heading mid-line right after whatever column-separator glyph
-  // (commonly "|" or ";") the OCR engine inserted at the gutter — e.g.
-  // "...infinite rotation | 42-channel mode". Accepting a heading there
-  // too, not just at true line start, is what lets every mode in a
-  // multi-mode manual get picked up instead of just the one whose heading
-  // happened to survive on its own line.
+  // later heading mid-line right after whatever the OCR engine put at the
+  // gutter. That is sometimes a literal column-separator glyph ("|" or
+  // ";"), but on real sideways-photographed manuals it is just as often
+  // nothing more than an ordinary single space — no punctuation survives to
+  // anchor on (measured on real photos: the same heading came through as
+  // "...infinite rotation 42-channel mode" and "...adjust 58-channel mode",
+  // plain space, no glyph). Accepting the heading anywhere it appears, not
+  // just at true line start or after a gutter glyph, is what lets every
+  // mode in a multi-mode manual get picked up instead of just the one whose
+  // heading happened to survive on its own line; the corroboration
+  // requirement below (2+ headings or a "DMX Channel Table" section
+  // heading) is what keeps this from firing on a stray, unrelated mention
+  // of a channel count in ordinary prose.
   final heading = RegExp(
-    r'(?:^[ \t]*|[|;][ \t]*)(\d{1,3})\s*-?\s*channel\s+mode\b',
+    r'(\d{1,3})\s*-?\s*channel\s+mode\b',
     caseSensitive: false,
     multiLine: true,
   );
@@ -2712,7 +2719,22 @@ _DetectedChannel _mergeDetectedChannel(
   _DetectedChannel incoming,
   DmxRange? range,
 ) {
-  final ranges = <DmxRange>[...?existing?.ranges, ?range];
+  final existingRanges = existing?.ranges ?? const <DmxRange>[];
+  // manual_extractor.js's extractImage() keeps both of a photo's scored OCR
+  // readings rather than discarding one (either can garble the one heading
+  // a mode table depends on while the other reads it cleanly), so the same
+  // physical row can legitimately appear twice in the text handed to this
+  // parser. Skip a range that exactly repeats one already recorded for this
+  // channel instead of appending a redundant duplicate — a channel legally
+  // repeating the identical (start, end) bounds for two different meanings
+  // does not happen in practice.
+  final isDuplicate =
+      range != null &&
+      existingRanges.any((r) => r.start == range.start && r.end == range.end);
+  final ranges = <DmxRange>[
+    ...existingRanges,
+    if (range != null && !isDuplicate) range,
+  ];
   final preferIncoming =
       existing == null ||
       existing.kind == 'generic' && incoming.kind != 'generic';
