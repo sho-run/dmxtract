@@ -803,6 +803,18 @@ class _NetworkNodeConnect extends StatelessWidget {
                 padding: const EdgeInsets.only(top: 8),
                 child: _LaunchBridgeAffordance(state: state),
               ),
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: OutlinedButton.icon(
+                  onPressed: () => web.window.open(
+                    'https://github.com/sho-run/dmxtract/releases/latest',
+                    '_blank',
+                    'noopener,noreferrer',
+                  ),
+                  icon: const Icon(Icons.download_outlined, size: 18),
+                  label: const Text('Download DMXtract Bridge (macOS)'),
+                ),
+              ),
               const Padding(
                 padding: EdgeInsets.only(top: 8),
                 child: _BridgeOsPrimingPanel(),
