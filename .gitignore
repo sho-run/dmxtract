@@ -19,3 +19,4 @@ testcorpus/*
 tmp/
 node_modules/
 .serena/
+__pycache__/
