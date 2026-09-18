@@ -1761,6 +1761,269 @@ PHX LVD Series                                                          Installa
     expect(result.fixture.modes, isEmpty);
     expect(result.fixture.manufacturer, 'Altman');
   });
+
+  test('does not bleed a Color Macros Chart\'s value columns into channel '
+      'names on the generic table fallback', () {
+    // Real corpus shape (ADJ_Encore_LP12Z_IP_UM, ADJ_Focus_Wash_400_UM):
+    // once every structured-mode detector (named/matrix/sequential/
+    // contextual/coded) comes up empty, `_tableChannels`'s generic "DMX
+    // TRAITS" fallback scans every "N <description>" line for a
+    // sequential N = 1, 2, 3... regardless of which page it is on. A
+    // later "COLOR MACROS CHART" also numbers its rows 1..N but every
+    // column past the row number is a plain DMX value (RED/GREEN/BLUE/
+    // LIME intensities, no function name at all) — the same grammar
+    // matches it, and the leading-mode-column stripping in
+    // `_classifyTableChannel` mis-anchors on it, leaving one stray macro
+    // value ("80", "77", "0"...) standing in as the channel name for
+    // every position instead of a real function name.
+    final manual = StringBuffer()
+      ..writeln('ADJ Encore LP12Z IP User Manual')
+      ..writeln('ADJ ADJ ADJ ADJ ADJ ADJ ADJ ADJ ADJ ADJ ADJ ADJ ADJ ADJ')
+      ..writeln('Thank you for purchasing this ADJ product.')
+      ..writeln('This fixture operates in an 18Ch mode.')
+      ..writeln('DMX TRAITS')
+      ..writeln('COLOR MACROS CHART')
+      ..writeln('MACRO NUMBER    DMX VALUE     RED   GREEN   BLUE   LIME');
+    const red = [
+      80, 80, 77, 117, 160, 223, 255, 255, 255, 255, //
+      234, 197, 160, 122, 85, 47, 10, 0,
+    ];
+    for (var i = 1; i <= 18; i++) {
+      final start = (i - 1) * 4 + 1;
+      final end = i * 4;
+      final startLabel = start.toString().padLeft(3, '0');
+      final endLabel = end.toString().padLeft(3, '0');
+      manual.writeln(
+        '$i   $startLabel - $endLabel   ${red[i - 1]}  255  164  80',
+      );
+    }
+    final result = fixtureFromManualText(
+      manual.toString(),
+      'ADJ_Encore_LP12Z_IP_UM.pdf',
+    );
+    final mode18 = result.fixture.modes.firstWhere(
+      (mode) => mode.channelIds.length == 18,
+    );
+    for (final id in mode18.channelIds) {
+      final name = result.fixture.channels
+          .firstWhere((channel) => channel.id == id)
+          .name;
+      expect(
+        RegExp(r'^\d+$').hasMatch(name),
+        isFalse,
+        reason: 'channel name "$name" leaked a bare Color Macro value',
+      );
+    }
+  });
+
+  test('reads MSB/LSB and bare-marker rows as fine companions, not '
+      'standalone channels', () {
+    // Real corpus shape (Martin_MAC700Profile_UM): "the main control
+    // channel sets the ... most significant byte (MSB), and the fine
+    // channel[] set[s] the ... least significant byte (LSB)" — printed
+    // in the channel table as "Dimmer (MSB)" for the coarse row and
+    // "Dimmer, fine (LSB)" for its fine byte, and (synthesized here from
+    // the same notation) a bare "LSB" continuation row with no attribute
+    // word of its own, the way a fixture that never repeats the coarse
+    // name prints its fine byte.
+    final manual = '''Martin MAC 700 Profile DMX Mode
+6 DMX channels
+1 Dimmer (MSB)
+2 Dimmer, fine (LSB)
+3 Pan MSB
+4 Pan LSB
+5 Tilt
+6 LSB
+Simple DMX Mode
+2 DMX channels
+1 Dimmer
+2 Strobe
+''';
+    final result = fixtureFromManualText(manual, 'Martin_MAC700Profile_UM.pdf');
+    final mode = result.fixture.modes.firstWhere(
+      (mode) => mode.channelIds.length == 6,
+    );
+    final channels = mode.channelIds
+        .map(
+          (id) => result.fixture.channels.firstWhere((item) => item.id == id),
+        )
+        .toList();
+    expect(channels[0].name, 'Dimmer');
+    expect(channels[0].kind, 'intensity');
+    expect(channels[0].fineOf, isNull);
+    expect(channels[1].kind, 'intensity');
+    expect(channels[1].fineOf, isNotNull);
+    expect(channels[2].name, 'Pan');
+    expect(channels[2].fineOf, isNull);
+    expect(channels[3].kind, 'pan');
+    expect(channels[3].fineOf, isNotNull);
+    expect(channels[4].name, 'Tilt');
+    expect(channels[5].kind, 'tilt');
+    expect(channels[5].fineOf, isNotNull);
+  });
+
+  test('reads a per-cell "XY | Ext. Function" repeated block table instead '
+      'of falling back to generic "Channel N" placeholders', () {
+    // Real corpus shape (ChauvetPro_COLORadoSOLOBar4_UM's 16-cell XY
+    // personality): each cell repeats an 8-channel block (Dimmer/Fine
+    // dimmer/X coordinate/Fine X coordinate/Y coordinate/Fine Y
+    // coordinate/Strobe/Virtual Color Wheel), but the table's true
+    // sequential position lives in a SECOND column ("Ext. Function");
+    // the first column ("XY") is sparse, printing a bare "–" for every
+    // row except a cell's first. `_parseTableSection`'s single-leading-
+    // number row grammar only ever looked at the first column, so it
+    // matched cell 1's "Dimmer 1" row (position 1 in both columns) and
+    // then stalled forever on "– 2 Fine dimmer 1..." — reproducing the
+    // benchmark's "142 of 147 slots come back 'Channel N'/NoFeature".
+    const v = '000  255'; // this table family's value-range glyph
+    final manual =
+        '''Chauvet Professional COLORado Solo Bar 4 User Manual
+This personality uses 16 channels.
+DMX Channel Assignments and Values
+Operation
+2 Cell Personalities
+XY
+ XY   Ext. Function                        Value    Percent/Setting
+  1    1   Dimmer 1                      $v 0-100%
+  –    2   Fine dimmer 1                 $v 0-100%
+  2    3   X coordinate 1                $v 0-100%
+  –    4   Fine X coordinate 1           $v 0-100%
+  3    5   Y coordinate 1                $v 0-100%
+  –    6   Fine Y coordinate 1           $v 0-100%
+  –    7   Strobe 1                      $v See the Strobe Chart
+  –    8   Virtual Color Wheel 1         $v See the Virtual Color Wheel Chart
+  4    9   Dimmer 2                      $v 0-100%
+  –   10   Fine dimmer 2                 $v 0-100%
+  5   11   X coordinate 2                $v 0-100%
+  –   12   Fine X coordinate 2           $v 0-100%
+  6   13   Y coordinate 2                $v 0-100%
+  –   14   Fine Y coordinate 2           $v 0-100%
+  –   15   Strobe 2                      $v See the Strobe Chart
+  –   16   Virtual Color Wheel 2         $v See the Virtual Color Wheel Chart
+''';
+    final result = fixtureFromManualText(
+      manual,
+      'ChauvetPro_COLORadoSOLOBar4_UM.pdf',
+    );
+    final mode = result.fixture.modes.firstWhere(
+      (mode) => mode.channelIds.length == 16,
+    );
+    final channels = mode.channelIds
+        .map(
+          (id) => result.fixture.channels.firstWhere((item) => item.id == id),
+        )
+        .toList();
+    expect(channels[0].name, 'Dimmer 1');
+    expect(channels[1].fineOf, isNotNull);
+    expect(channels[1].kind, 'intensity');
+    expect(channels[2].name, 'X coordinate 1');
+    expect(channels[4].name, 'Y coordinate 1');
+    expect(channels[6].name, 'Light switch / strobe');
+    expect(channels[7].name, 'Color wheel');
+    expect(channels[8].name, 'Dimmer 2');
+    expect(channels[9].fineOf, isNotNull);
+    for (final channel in channels) {
+      expect(
+        RegExp(r'^Channel \d+$').hasMatch(channel.name),
+        isFalse,
+        reason:
+            '"${channel.name}" fell back to a generic placeholder instead '
+            'of reading the per-cell block',
+      );
+    }
+  });
+
+  test('reads a per-cell table with up to seven throwaway leading '
+      'personality columns ahead of the real position number', () {
+    // Real corpus shape (ChauvetPro_COLORadoSOLOBar4_UM's 259-channel
+    // "RGBWL Full 259ch" mode, straight off the manual): up to SEVEN
+    // other-personality columns lead the row, not the one throwaway
+    // column the "XY | Ext. Function" table above has - the real text
+    // this fixture prints is "– – – – 1 1 1 1 Dimmer 1 000 255 0–100%"
+    // for channel 1 and "– – – – – – – 2 Fine dimmer 1 000 255 0–100%"
+    // for channel 2, i.e. the sequential "Ext. Function" number is the
+    // LAST of eight leading digit/dash tokens, not the second.
+    // Every leading-column count from 1 (the "XY | Ext. Function" shape
+    // above) through 7 has to keep working, and the true sequential
+    // position has to advance one at a time with no gaps for
+    // [_parseTableSection]'s "N <description>" grammar to keep matching -
+    // so this reproduces the real table's actual interleaving of "Ext.
+    // Function"-numbered rows (coarse channels matching the PLAIN
+    // single-leading-number grammar directly, e.g. "1 1 1 1 Red 1 ...")
+    // with sparse, up-to-seven-throwaway-column rows (fine bytes, e.g.
+    // "– – – 2 – – – 4 Fine red 1 ..."), rather than only the sparse rows
+    // in isolation.
+    const v = '000  255';
+    final manual =
+        '''Chauvet Professional COLORado Solo Bar 4 User Manual
+This personality uses 5 channels.
+DMX Channel Assignments and Values
+Operation
+16 Cell Personalities
+XY
+ –  –  –  –  1  1  1  1   Dimmer 1               $v 0–100%
+ –  –  –  –  –  –  –  2   Fine dimmer 1          $v 0–100%
+  1  1  1  1  2  2  2  3   Red 1                  $v 0–100%
+ –  –  –  2  –  –  –  4   Fine red 1             $v 0–100%
+ –  –  –  –  5  6  7  5   Color temperature 1    $v See the Color Temperature Chart
+''';
+    final result = fixtureFromManualText(
+      manual,
+      'ChauvetPro_COLORadoSOLOBar4_UM.pdf',
+    );
+    final mode = result.fixture.modes.firstWhere(
+      (mode) => mode.channelIds.length >= 5,
+    );
+    final channels = mode.channelIds
+        .map(
+          (id) => result.fixture.channels.firstWhere((item) => item.id == id),
+        )
+        .toList();
+    expect(channels[0].name, 'Dimmer 1');
+    expect(channels[1].fineOf, isNotNull);
+    expect(channels[2].name, 'Red 1');
+    expect(channels[3].fineOf, isNotNull);
+    for (final channel in channels) {
+      expect(
+        RegExp(r'^Channel \d+$').hasMatch(channel.name),
+        isFalse,
+        reason:
+            '"${channel.name}" fell back to a generic placeholder instead '
+            'of reading the eight-leading-column per-cell block',
+      );
+    }
+  });
+
+  test('classifies a channel name no hand-written heuristic recognizes via '
+      'the mined unified.db name-to-attribute table', () {
+    // "Frost"/"Iris" have no dedicated branch in [_classifyTableChannel] at
+    // all (unlike "gobo"/"prism"/"zoom", which do) — before the mined
+    // fallback, these fell all the way through to a bare `kind: 'generic'`
+    // channel, which defaults to the GDTF attribute "NoFeature" regardless
+    // of what the channel actually does.
+    final manual = '''Test Fixture DMX Mode
+3 DMX channels
+1 Dimmer
+2 Frost
+3 Iris
+Simple DMX Mode
+1 DMX channels
+1 Dimmer
+''';
+    final result = fixtureFromManualText(manual, 'Test_Fixture_UM.pdf');
+    final mode = result.fixture.modes.firstWhere(
+      (mode) => mode.channelIds.length == 3,
+    );
+    final channels = mode.channelIds
+        .map(
+          (id) => result.fixture.channels.firstWhere((item) => item.id == id),
+        )
+        .toList();
+    expect(channels[1].name, 'Frost');
+    expect(channels[1].gdtfAttribute, 'Frost1');
+    expect(channels[2].name, 'Iris');
+    expect(channels[2].gdtfAttribute, 'Iris');
+  });
 }
 
 /// Builds a synthetic "N-channel mode" manual excerpt modeled on a
