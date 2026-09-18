@@ -16,30 +16,89 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
     r'\b((?:COLORado|MAC)\s+[A-Za-z0-9][A-Za-z0-9 -]{1,40}?)\s+User Manual\b',
     caseSensitive: false,
   ).firstMatch(flat);
-  final titledModelMatch = RegExp(
-    r'\b([A-Z][A-Za-z0-9_-]{2,30})[™®]?\s+(?:user|owner.?s?)\s+manual\b',
-    caseSensitive: false,
-  ).firstMatch(flat);
+  // Title pages don't only say "User Manual" — "DMX Traits", "User
+  // Instructions" and "Programming Manual" are all doc-type suffixes this
+  // corpus's manuals actually use for the same role.
+  // "User" is deliberately singular-only (never "Users Manual"): several
+  // manuals in the corpus repeat "<Product> Installation & Users Manual" as
+  // a running header on every page, and letting "Users Manual" alone count
+  // as the doc-type suffix pulled "Installation &" into the captured title
+  // since it sits between the product name and the suffix with no
+  // separator this pattern recognizes.
+  const manualSuffix =
+      r"(?:User\s+Manual|Owner'?s?\s+Manual|Programming\s+Manual|"
+      r"Instruction(?:s)?\s+Manual|User\s+Instructions|DMX\s+Traits)";
   final manualTitleMatch = RegExp(
-    // The separator between the title and "User Manual" is deliberately
-    // [ \t]+, not \s+: \s+ also matches newlines, and this pattern runs
-    // against the raw (non-flattened) text with multiline ^/$ anchors, so a
-    // \s+ gap would happily bridge across the "=== DMXTRACT PAGE N ==="
-    // marker between pages — e.g. a cover page whose product name renders
-    // as an unreadable image, leaving only the orphaned text "User Manual",
-    // would match "=== DMXTRACT PAGE 1 ===\nUser Manual" as the title,
-    // extracting the page marker itself as the model.
-    r'^[ \t]*(.{3,70}?)[ \t]+User Manual'
-    r'(?:[ \t]+(?:Rev\.?|Revision)\s*[A-Z0-9.]+)?[ \t]*$',
+    // The separator between the title and the doc-type suffix is
+    // deliberately [ \t]+, not \s+: \s+ also matches newlines, and this
+    // pattern runs against the raw (non-flattened) text with multiline
+    // ^/$ anchors, so a \s+ gap would happily bridge across the
+    // "=== DMXTRACT PAGE N ===" marker between pages — e.g. a cover page
+    // whose product name renders as an unreadable image, leaving only the
+    // orphaned text "User Manual", would match
+    // "=== DMXTRACT PAGE 1 ===\nUser Manual" as the title, extracting the
+    // page marker itself as the model. An optional "-"/"–" separator is
+    // allowed too ("ADJ VIZI XTREME - DMX TRAITS" is one physical line).
+    r'^[ \t]*(.{3,70}?)[ \t]+(?:[-–][ \t]+)?' +
+        manualSuffix +
+        r'(?:[ \t]+(?:Rev\.?|Revision)\s*[A-Z0-9.]+)?[ \t]*$',
     caseSensitive: false,
     multiLine: true,
   ).firstMatch(text);
-  final titleModel = _modelFromManualTitle(manualTitleMatch?.group(1));
+  // Same idea, but the title and the doc-type suffix sit on two
+  // consecutive physical lines (a cover page that centers the model name
+  // above a smaller "User Manual"/"User Instructions" line). Still
+  // same-page only: a single "\n", never a page-marker gap. This has to run
+  // unconditionally, not only when manualTitleMatch itself is null: a
+  // manual can contain an unrelated same-line match earlier in the body
+  // (e.g. a "DMX Traits" table-column header with nothing but whitespace
+  // in front of it) that firstMatch finds and _modelFromManualTitle then
+  // rejects as empty/furniture, and by then it's too late to fall back to
+  // scanning for the two-line cover title.
+  //
+  // "Unconditionally" still only means "scan the cover page", not "scan the
+  // whole document": once a manual is more than one page, a same-shaped
+  // "<line>\n<doc-type suffix>" pair can occur anywhere in the body — a
+  // revision-history table row sitting directly above a running "DMX
+  // Traits" section heading (real corpus shape) reads exactly like a cover
+  // title otherwise. Restricting the scan to the text before the second
+  // "=== DMXTRACT PAGE N ===" marker keeps it doing only the job its
+  // comment describes.
+  final pageMarkers = RegExp(
+    r'^=== DMXTRACT PAGE \d+ ===\s*$',
+    multiLine: true,
+  ).allMatches(text).toList();
+  final coverPageText = pageMarkers.length >= 2
+      ? text.substring(0, pageMarkers[1].start)
+      : text;
+  // Last-resort fallback for a cover page whose own product name is
+  // unreadable but that still carries boilerplate like "FOR YOUR OWN
+  // SAFETY, PLEASE READ THIS USER MANUAL CAREFULLY" — same cover-page-only
+  // restriction as the two-line match above, and for the same reason: run
+  // unrestricted over the whole flattened document, this can just as easily
+  // land on a body data row (a revision-history entry, a spec line) sitting
+  // in front of some other, unrelated occurrence of the doc-type suffix
+  // later in the manual.
+  final titledModelMatch = RegExp(
+    r'\b([A-Z][A-Za-z0-9_-]{2,30})[™®]?\s+' + manualSuffix + r'\b',
+    caseSensitive: false,
+  ).allMatches(coverPageText.replaceAll(RegExp(r'\s+'), ' '));
+  final manualTitleTwoLineMatch = RegExp(
+    r'^[ \t]*(.{3,70}?)[ \t]*\n[ \t]*' +
+        manualSuffix +
+        r'(?:[ \t]+(?:Rev\.?|Revision)\s*[A-Z0-9.]+)?[ \t]*$',
+    caseSensitive: false,
+    multiLine: true,
+  ).firstMatch(coverPageText);
+  final titleModel =
+      _modelFromManualTitle(manualTitleMatch?.group(1)) ??
+      _modelFromManualTitle(manualTitleTwoLineMatch?.group(1)) ??
+      _modelFromLetterTrackedTraitsLine(text);
   final modelFromManual =
       productLineModelMatch?.group(1)?.trim() ??
       numberedModelMatch?.group(1)?.replaceAll(' ', '') ??
       titleModel ??
-      titledModelMatch?.group(1);
+      _firstNonStopwordTitle(titledModelMatch);
   final fallback = _modelFromFilename(sourceName);
   final model = modelFromManual ?? fallback ?? 'Unknown fixture';
   final manufacturerFromManual = _manufacturer(flat);
@@ -48,7 +107,19 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
       : manufacturerFromManual;
   final modeCounts = <int>[];
   for (final match in RegExp(
-    r'(?<![A-Za-z0-9])(\d{1,3})\s*[-–]?\s*(?:CH|channel(?:s| mode)?)(?![A-Za-z])',
+    // The trailing lookahead used to only exclude a following letter, so
+    // "CH" swallowed a channel *label* immediately after it: a control-menu
+    // row like "...RGB TXT Mode 1 CH9 RGB Dual-Sign L..." (channel 8's
+    // function names a value "Mode 1", and CH9 is the next row's channel
+    // ID, not a channel count) read as "1 CH", a bogus 1-channel mode. A
+    // genuine count ("6CH", "19CH") is always followed by whitespace or
+    // punctuation, never by another digit, so digits are excluded here too.
+    // A "UNIT n" multi-fixture addressing-offset table ("UNIT 1 UNIT 2
+    // UNIT 3 UNIT 4") is excluded too: on the flattened (newline-collapsed)
+    // text, its last column label sits directly in front of that table's
+    // own, unrelated "Channel Mode" heading, reading as "4 CHANNEL MODE" —
+    // a bogus 4-channel mode.
+    r'(?<![A-Za-z0-9])(?<!unit )(\d{1,3})\s*[-–]?\s*(?:CH|channel(?:s| mode)?)(?![A-Za-z0-9])',
     caseSensitive: false,
   ).allMatches(flat)) {
     final value = int.tryParse(match.group(1)!);
@@ -92,7 +163,17 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
         modeCounts.length == 1 &&
         modeCounts.single > tableCount * 2) {
       modeCounts[0] = tableCount;
-    } else if (!modeCounts.contains(tableCount)) {
+    } else if (modeCounts.length <= 1 && !modeCounts.contains(tableCount)) {
+      // Once a manual has already declared 2+ modes elsewhere (a "DMX
+      // Traits"/matrix-style header naming several channel counts, say),
+      // [_tableChannelCount]'s sequential-position scan over that same
+      // table is measuring one of those modes' own leftmost column, not an
+      // independent extra mode — a value sub-table with no position number
+      // of its own (e.g. a color-macro range list between two channel
+      // rows) can break the run short and land on a smaller count that
+      // isn't any of the modes actually in the table. Only trust this
+      // heuristic to *add* a mode when it has at most one declared count to
+      // corroborate or replace.
       modeCounts.add(tableCount);
     }
   }
@@ -430,20 +511,104 @@ String _manufacturer(String value) {
   return 'Unknown manufacturer';
 }
 
+// Common filler words that can land directly in front of a doc-type suffix
+// ("...PLEASE READ THIS USER MANUAL CAREFULLY") without being any part of
+// the product name.
+const _titleStopwords = {
+  'this',
+  'the',
+  'a',
+  'an',
+  'your',
+  'our',
+  'my',
+  'its',
+  'read',
+  'see',
+  'review',
+  'entire',
+  'complete',
+  'following',
+  'above',
+  'before',
+  'use',
+  // Descriptive adjectives naming the *kind* of manual, not the product —
+  // "READ THE SAFETY INSTRUCTION MANUAL FIRST", "the SERVICE instruction
+  // manual", "the ADVANCED programming manual", "This IMPORTANT instruction
+  // manual", "the GENERAL owner manual". None of these are ever a fixture's
+  // model name on their own.
+  'safety',
+  'service',
+  'general',
+  'advanced',
+  'important',
+  'basic',
+  'quick',
+  'full',
+  'technical',
+  'programming',
+  'installation',
+  'operation',
+  'operating',
+  'troubleshooting',
+  'maintenance',
+  'reference',
+};
+
+String? _firstNonStopwordTitle(Iterable<RegExpMatch> matches) {
+  for (final match in matches) {
+    final word = match.group(1)!;
+    if (_titleStopwords.contains(word.toLowerCase())) continue;
+    // The pattern that produced these matches is caseSensitive: false (it
+    // has to be, to find the doc-type suffix in any case), which makes its
+    // own `[A-Z]` anchor on the captured word inert — an ordinary lowercase
+    // prose word ("these", "all") satisfies it just as well as a real
+    // capitalized product name. Check the actual case here instead: a real
+    // model reads as a proper noun (capitalized) or carries a model number.
+    if (!RegExp(r'^[A-Z]').hasMatch(word) && !RegExp(r'\d').hasMatch(word)) {
+      continue;
+    }
+    // Route through the same furniture/safety/data-line checks as every
+    // other title candidate — this bypassed them entirely before, so the
+    // exact defect class those checks exist for ("SAFETY", "USER", ...)
+    // was still reachable through this path with different boilerplate.
+    final model = _modelFromManualTitle(word);
+    if (model != null) return model;
+  }
+  return null;
+}
+
+/// True when a title candidate reads like tabular/bookkeeping data — a
+/// revision-history row, a table-of-contents dot-leader entry, a copyright
+/// line, or a "Field: value" spec line — rather than an actual product
+/// name. These are exactly the shapes a stray line directly above a bare
+/// doc-type heading ("DMX Traits", "User Instructions") can take once that
+/// heading is also a running section header, not only a cover-page label.
+bool _looksLikeDataLine(String value) =>
+    value.contains('©') ||
+    RegExp(r'\.{3,}').hasMatch(value) ||
+    RegExp(r'^\s*\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}\b').hasMatch(value) ||
+    value.contains(':') ||
+    RegExp(r'\d+').allMatches(value).length > 2;
+
 String? _modelFromManualTitle(String? raw) {
   if (raw == null) return null;
   var value = raw
       .replaceAll(RegExp(r'[™®]'), '')
       .replaceFirst(
         RegExp(
-          r'^\s*(?:Chauvet(?:\s+Professional)?|Martin)\s+',
+          r'^\s*(?:Chauvet(?:\s+Professional)?|Martin|ADJ)\s+',
           caseSensitive: false,
         ),
         '',
       )
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
-  if (value.isEmpty || _looksLikePageFurniture(value)) return null;
+  if (value.isEmpty ||
+      _looksLikePageFurniture(value) ||
+      _looksLikeDataLine(value)) {
+    return null;
+  }
   if (RegExp(r'^(?:safety|user|owner)', caseSensitive: false).hasMatch(value)) {
     return null;
   }
@@ -472,11 +637,105 @@ String? _modelFromFilename(String name) {
       .replaceAll(RegExp(r'[_-]{2,}'), ' ')
       .replaceAll('_', ' ')
       .trim();
+  // Strip revision markers ("Rev0", "Rev. 2") and bare YYYYMMDD date stamps
+  // left over once "manual"/"dmx traits" is gone — they're filename
+  // bookkeeping, not part of the product name, and otherwise end up glued
+  // onto the fallback model (e.g. "SPECTRA REV0 20210204").
+  //
+  // The revision number itself is capped at 2 digits ("Rev0", "Rev. 2",
+  // "REV12"): a real revision index is short, so this still lets `\s*`
+  // bridge a "Rev." to a same-token digit, but a longer run right after
+  // "Rev" (as in "MAC_Rev_2000", where 2000 reads as the filename's own
+  // model number, not a revision index) leaves that number alone instead of
+  // deleting it as if it were part of the marker.
+  //
+  // The date strip is anchored to a plausible calendar stamp
+  // ((?:19|20)\d{6}) rather than any bare 8-digit run — an unanchored
+  // \d{8} deletes real 8-digit part numbers ("LED-12345678") that happen to
+  // be exactly 8 digits long but aren't dates at all.
+  value = value
+      .replaceAll(RegExp(r'\brev\.?\s*\d{0,2}\b', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\b(?:19|20)\d{6}\b'), '')
+      .replaceAll(RegExp(r'\s{2,}'), ' ')
+      // A strip can leave a dangling separator at either end ("Rev-Party-
+      // Bar" -> "-Party-Bar" once "Rev" alone is removed) — trim those off
+      // rather than surfacing punctuation as if it were part of the name.
+      .replaceAll(RegExp(r'^[-_\s]+|[-_\s]+$'), '')
+      .trim();
   final tokens = RegExp(
     r'\b[A-Za-z]{1,8}[- ]?\d{2,5}[A-Za-z]?\b',
   ).allMatches(value).map((match) => match.group(0)!.replaceAll(' ', ''));
   if (tokens.isNotEmpty) return tokens.first;
-  return value.isEmpty ? null : value;
+  if (value.isEmpty) return null;
+  // A source file that arrived as a bare content hash ("9e48fa0ab3c9…") has
+  // no product name to recover from its filename at all — a run of 16+
+  // hex-only characters is never a real fixture model, and surfacing it
+  // verbatim is worse than admitting we don't know the model and falling
+  // through to "Unknown fixture".
+  if (RegExp(r'^[a-f0-9]{16,}$', caseSensitive: false).hasMatch(value)) {
+    return null;
+  }
+  return value;
+}
+
+/// Recovers a product name from a cover line like "ADJ VIZI XTREME - DMX
+/// TRAITS" when the source PDF's title font tracks every glyph apart, which
+/// pdftotext then renders as single-space-separated single/double-character
+/// tokens with no way to tell a within-word gap from a between-word gap
+/// ("E L I M I N AT O R L P H E X 1 2 P L U S - D M X T R A I T S" is
+/// "ELIMINATOR LP HEX 12 PLUS - DMX TRAITS" with every glyph's tracking gap
+/// collapsed to the same single space pdftotext uses between real words).
+/// Only a letter/digit boundary survives as an unambiguous split point in
+/// that output, so that's the only place this reinserts a space; word
+/// boundaries between two runs of letters (e.g. "ELIMINATOR" next to "LP")
+/// can't be recovered from plain text without the PDF's glyph coordinates,
+/// which this pipeline (plain pdftotext output) doesn't have.
+String? _modelFromLetterTrackedTraitsLine(String text) {
+  for (final line in text.split('\n')) {
+    final trimmed = line.trim();
+    if (trimmed.isEmpty) continue;
+    final dash = RegExp(r'[ \t][-–][ \t]').firstMatch(trimmed);
+    if (dash == null) continue;
+    final left = trimmed.substring(0, dash.start).trim();
+    final right = trimmed.substring(dash.end).trim();
+    final rightTokens = right.split(RegExp(r'\s+'));
+    // Only the letter-tracked spelling of "DMX TRAITS" (one token per
+    // glyph) is handled here — a normally spaced "DMX TRAITS" suffix is
+    // already covered by [manualSuffix] above.
+    if (rightTokens.any((token) => token.length > 2)) continue;
+    if (rightTokens.join().toUpperCase() != 'DMXTRAITS') continue;
+    final leftTokens = left.split(RegExp(r'\s+'));
+    if (leftTokens.length < 6 ||
+        leftTokens.any(
+          (token) => !RegExp(r'^[A-Za-z0-9]{1,2}$').hasMatch(token),
+        )) {
+      continue;
+    }
+    var joined = leftTokens.join();
+    const knownBrandPrefixes = [
+      'CHAUVETPROFESSIONAL',
+      'CHAUVET',
+      'MARTIN',
+      'ELIMINATOR',
+      'ADJ',
+    ];
+    for (final brand in knownBrandPrefixes) {
+      if (joined.toUpperCase().startsWith(brand)) {
+        joined = joined.substring(brand.length);
+        break;
+      }
+    }
+    final spaced = joined
+        .replaceAllMapped(
+          RegExp(r'([A-Za-z])(\d)|(\d)([A-Za-z])'),
+          (match) => match.group(1) != null
+              ? '${match.group(1)} ${match.group(2)}'
+              : '${match.group(3)} ${match.group(4)}',
+        )
+        .trim();
+    if (spaced.isNotEmpty) return spaced;
+  }
+  return null;
 }
 
 int _tableChannelCount(String text) {
@@ -1954,7 +2213,13 @@ List<_DetectedModeTable> _sequentialModeTables(String text) {
   // heading) is what keeps this from firing on a stray, unrelated mention
   // of a channel count in ordinary prose.
   final heading = RegExp(
-    r'(\d{1,3})\s*-?\s*channel\s+mode\b',
+    // The gap between the digit and "channel" is deliberately [ \t], not
+    // \s: \s also matches a newline, and this heading isn't anchored to
+    // line start (see above), so that would let it bridge two unrelated
+    // physical lines — e.g. an "...UNIT 4" table-column label immediately
+    // followed by an unrelated "CHANNEL MODE" section heading on the next
+    // line reads as "4\n  CHANNEL MODE", a bogus 4-channel mode heading.
+    r'(\d{1,3})[ \t]*-?[ \t]*channel\s+mode\b',
     caseSensitive: false,
     multiLine: true,
   );
@@ -2858,6 +3123,10 @@ String _cleanFunction(String value) {
 }
 
 bool _looksLikePageFurniture(String value) =>
+    // The "=== DMXTRACT PAGE N ===" marker itself, in case a two-line
+    // title/suffix match bridges a cover page whose product name rendered
+    // as an unreadable image, leaving the marker as the only "title" line.
+    value.trimLeft().startsWith('=') ||
     RegExp(
       r'^(page|p\.?\s*\d|rev(?:ision)?|user manual|contents?)\b',
       caseSensitive: false,

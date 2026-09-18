@@ -3,6 +3,7 @@ import 'package:web/web.dart' as web;
 import '../app_state.dart';
 import '../channel_editor.dart';
 import '../components.dart';
+import '../diagnostic_report_affordance.dart';
 import '../fixture_name_editor.dart';
 import '../gdtf_lookup.dart';
 import '../model.dart';
@@ -102,6 +103,7 @@ class ReviewScreen extends StatelessWidget {
             ),
           ),
         ],
+        DiagnosticReportAffordance(state: state),
         const SizedBox(height: 18),
         AdvancedDisclosurePanel(
           title: 'Edit DMX table',

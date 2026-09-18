@@ -1,3 +1,6 @@
+@TestOn('vm')
+library;
+
 import 'dart:io';
 import 'package:dmxtract_web/src/extraction_rules.dart';
 import 'package:dmxtract_web/src/model.dart';
@@ -1423,6 +1426,323 @@ DMX Channel Assignments and Values
       expect(channel.name, 'Control $position');
       expect(channel.confidence, greaterThan(0.5));
     }
+  });
+
+  test('does not mistake "READ THIS USER MANUAL" filler text for the model', () {
+    // Corpus regression: 1920W_RGBWAUV-.txt / LED120W.txt / shehds200w846strobe.txt
+    // all open with this exact safety boilerplate and no other "Model:" or
+    // title line, so the titled-model fallback used to capture "THIS" (the
+    // word right before "USER MANUAL") as the model.
+    final result = fixtureFromManualText(
+      '''LED Beam+Wash 19x20W RGBWAUV Zoom Light
+CAUTION! Keep this device away from rain and moisture!
+FOR YOUR OWN SAFETY, PLEASE READ THIS USER MANUAL CAREFULLY
+BEFORE YOU INITIAL START - UP!
+DMX Channel Table
+1 000-255 Pan
+2 000-255 Tilt
+3 000-255 Dimmer
+4 000-255 Strobe''',
+      '1920W_RGBWAUV-.pdf',
+    );
+    expect(result.fixture.model, isNot('THIS'));
+    expect(result.fixture.model, isNot(contains('READ THIS')));
+  });
+
+  test('does not turn a descriptive adjective or lowercase prose word in front '
+      'of "instruction/programming/owner manual" into the model', () {
+    // The "THIS USER MANUAL" fix above replaced a bare firstMatch with an
+    // allMatches + stopword-filtered scan, but that scan bypassed the
+    // safety/user/owner reject entirely (it returned the raw captured
+    // word straight to the caller instead of routing it through
+    // _modelFromManualTitle like every other title candidate), and its
+    // caseSensitive: false pattern meant an ordinary lowercase prose word
+    // satisfied the same "[A-Z]" capture group as a real product name.
+    for (final line in const [
+      'READ THE SAFETY INSTRUCTION MANUAL FIRST',
+      'Refer to the SERVICE instruction manual for repairs',
+      'Consult the ADVANCED programming manual for macros',
+      'This IMPORTANT instruction manual must be kept',
+      'See the GENERAL owner manual for details',
+      'Please follow these user instructions carefully',
+      'Keep all user instructions for future reference',
+    ]) {
+      final result = fixtureFromManualText(
+        '$line\nDMX Channel Table\n1 000-255 Pan\n2 000-255 Tilt',
+        'LM3715R.pdf',
+      );
+      expect(
+        result.fixture.model,
+        'LM3715R',
+        reason: 'for manual text "$line"',
+      );
+    }
+  });
+
+  test('reads the model from a "<Title> - DMX Traits" cover line on one '
+      'physical line', () {
+    // Corpus regression: 15a2a6ff....txt opens with "ADJ VIZI XTREME -
+    // DMX TRAITS" instead of "... User Manual"; the manual-title pattern
+    // used to only recognize "User Manual"/"Owner's Manual" suffixes, so
+    // this fell through to the hash-named source file as the model.
+    final result = fixtureFromManualText('''ADJ VIZI XTREME - DMX TRAITS
+CHANNEL DMX FUNCTION
+28Ch 40Ch VALUES
+1 1 000-255 Pan Movement''', '15a2a6ff145475d6dd14364285982a4a87a4129d.pdf');
+    expect(result.fixture.manufacturer, 'ADJ');
+    expect(result.fixture.model, 'VIZI XTREME');
+  });
+
+  test('reads the model from a two-line "<Title>\\nUser Instructions" cover '
+      'page', () {
+    // Corpus regression: a623026....txt opens with " VIZI XTREME" on one
+    // line and "User Instructions" on the next; neither "User
+    // Instructions" nor a two-physical-line title were recognized, so
+    // this also fell back to the hash-named source file.
+    final result = fixtureFromManualText(''' VIZI XTREME
+User Instructions
+
+DMX Channel Table
+1 000-255 Pan
+2 000-255 Tilt''', 'a623026b9d58cf797618e8003a458e390cd49754.pdf');
+    expect(result.fixture.model, 'VIZI XTREME');
+  });
+
+  test('reads the full two-word model from a two-line "<Title>\\nUser Manual" '
+      'cover page', () {
+    // Corpus regression: 8cc4abe....txt opens with "HYDRO HYBRID" on one
+    // line and "User Manual" (indented) on the next. The old titled-model
+    // fallback only captured a single token directly before "User
+    // Manual" on the same line, so it returned "HYBRID" and silently
+    // dropped "HYDRO".
+    final result = fixtureFromManualText('''HYDRO HYBRID
+   User Manual
+
+DMX Channel Table
+1 000-255 Pan
+2 000-255 Tilt''', '8cc4abe74ab952c51489d1eb55d4f2e0458ded65.pdf');
+    expect(result.fixture.model, 'HYDRO HYBRID');
+  });
+
+  test('does not read a revision-history table row above a running "DMX '
+      'Traits" heading as the model', () {
+    // Corpus regression class (8cc4abe74ab...txt, page 2): a document-
+    // version table has a date/revision-number row directly above a
+    // running "DMX Traits" section heading — "<data row>\nDMX Traits" is
+    // exactly the same two-physical-line shape as a real cover title
+    // above a doc-type suffix. The two-line title scan used to run
+    // unconditionally over the *whole* document, so on a manual whose
+    // real cover title is unreadable (an image), firstMatch would land on
+    // this row instead of falling through to the filename.
+    final result = fixtureFromManualText(
+      '=== DMXTRACT PAGE 1 ===\n'
+          'CAUTION! Keep this device away from rain and moisture!\n'
+          '=== DMXTRACT PAGE 2 ===\n'
+          ' 09/09/2024  1.3  N/C  No Changes\n'
+          '                                    DMX Traits\n'
+          'DMX Channel Table\n'
+          '1 000-255 Pan\n'
+          '2 000-255 Tilt',
+      'LM3715R.pdf',
+    );
+    expect(result.fixture.model, isNot(contains('09/09/2024')));
+    expect(result.fixture.model, isNot(contains('Changes')));
+    expect(result.fixture.model, 'LM3715R');
+  });
+
+  test('does not read a table-of-contents dot-leader line or a "Field: value" '
+      'spec line above a doc-type suffix as the model', () {
+    // Same defect class as the revision-history case above, reproduced
+    // with the other two boilerplate shapes the two-line scan can land
+    // on once a manual has more than a cover page: a TOC entry
+    // ("Troubleshooting ..... 14") and a spec line ("Weight: 12.5 kg").
+    final toc = fixtureFromManualText(
+      'Troubleshooting ..................... 14\nUser Instructions\n'
+          'DMX Channel Table\n1 000-255 Pan\n2 000-255 Tilt',
+      'LM3715R.pdf',
+    );
+    expect(toc.fixture.model, isNot(contains('Troubleshooting')));
+    expect(toc.fixture.model, 'LM3715R');
+
+    final spec = fixtureFromManualText(
+      'Weight: 12.5 kg\nUser Manual\n'
+          'DMX Channel Table\n1 000-255 Pan\n2 000-255 Tilt',
+      'LM3715R.pdf',
+    );
+    expect(spec.fixture.model, isNot(contains('Weight')));
+    expect(spec.fixture.model, 'LM3715R');
+  });
+
+  test(
+    'strips revision and date stamps out of the filename fallback model',
+    () {
+      // Corpus regression: SPECTRA_MANUAL_REV0_20210204.txt's real title is
+      // unreadable (a garbled subset-font cover page), so extraction falls
+      // back to the source filename, which used to surface verbatim as
+      // "SPECTRA REV0 20210204" instead of just "SPECTRA".
+      final result = fixtureFromManualText(
+        '''Have a question regarding this manual?
+DMX Channel Table
+1 000-255 Pan
+2 000-255 Tilt''',
+        'SPECTRA_MANUAL_REV0_20210204.pdf',
+      );
+      expect(result.fixture.model, 'SPECTRA');
+    },
+  );
+
+  test('does not delete an 8-digit part number or leave a dangling separator '
+      'when stripping filename revision/date markers', () {
+    // The date strip above used an unanchored \b\d{8}\b, which deletes
+    // ANY 8-digit run, date-shaped or not — including a genuine 8-digit
+    // OEM/rebadge part number, which is common on this app's audience of
+    // rebadged fixtures. And neither strip re-trimmed the separator it
+    // left behind, so a leading "Rev-" or "Rev_" surfaced as punctuation
+    // stuck to the front of the model.
+    final noTitleText =
+        'Have a question regarding this manual?\n'
+        'DMX Channel Table\n1 000-255 Pan\n2 000-255 Tilt';
+
+    // A real 8-digit part number is not a YYYYMMDD date stamp and must
+    // survive.
+    expect(
+      fixtureFromManualText(noTitleText, 'LED-12345678.pdf').fixture.model,
+      contains('12345678'),
+    );
+
+    // A leading "Rev-" strips to just its separator; that separator must
+    // not surface as part of the model.
+    expect(
+      fixtureFromManualText(noTitleText, 'Rev-Party-Bar.pdf').fixture.model,
+      'Party-Bar',
+    );
+
+    // A short revision index directly after "Rev" is still removed
+    // ("Rev0"/"Rev. 2"), but a longer number after "Rev " is a model
+    // number, not a revision index, and must not be deleted with it.
+    expect(
+      fixtureFromManualText(noTitleText, 'MAC_Rev_2000.pdf').fixture.model,
+      contains('2000'),
+    );
+  });
+
+  test('rejects a bare content-hash filename as the model', () {
+    // Corpus regression: a623026b....txt and 15a2a6ff....txt both arrive
+    // named after their content hash with no other filename clue, and used
+    // to surface that 40-character hex string verbatim as the model when
+    // no in-document title matched.
+    final result = fixtureFromManualText(
+      '''Some unrelated body text with no title or manual marker.
+DMX Channel Table
+1 000-255 Pan
+2 000-255 Tilt''',
+      '9e48fa0ab3c982dff2a2841efb795bbeb4e99334.pdf',
+    );
+    expect(result.fixture.model, 'Unknown fixture');
+  });
+
+  test('recovers a model from a glyph-tracked "<Title> - DMX Traits" cover '
+      'line', () {
+    // Corpus regression: 9e48fa0a....txt's cover line renders as
+    // "E L I M I N AT O R L P H E X 1 2 P L U S - D M X T R A I T S"
+    // (the title font tracks every glyph apart, so pdftotext prints one
+    // token per glyph with no way to tell a within-word gap from a
+    // between-word gap) and used to fall through to the hash filename as
+    // the model. Only the letter/digit boundary survives as an
+    // unambiguous split point, so "ELIMINATOR" (a recognized brand
+    // prefix, stripped like "Chauvet"/"Martin" elsewhere) can be
+    // separated out, but "LP" and "HEX" can't be told apart from plain
+    // text alone.
+    final result = fixtureFromManualText(
+      '''E L I M I N AT O R L P H E X 1 2 P L U S - D M X T R A I T S
+CHANNEL
+6Ch 10Ch
+1 2 000-255 Total Dimmer''',
+      '9e48fa0ab3c982dff2a2841efb795bbeb4e99334.pdf',
+    );
+    expect(result.fixture.model, 'LPHEX 12 PLUS');
+  });
+
+  test('does not read a channel-menu row\'s value label ("...Mode 1 CH9...") '
+      'as a bogus 1-channel/2-channel mode', () {
+    // Corpus regression: shehds200w846strobe.txt's control-menu table
+    // describes channel 8's function as "RGB TXT Mode 1" immediately
+    // followed by channel 9's row ("CH9 RGB Dual-Sign R..."). Read
+    // together that's "Mode 1 CH9" / "Mode 2 CH10", which the mode-count
+    // scan used to misread as declarations of a 1-channel and a
+    // 2-channel mode alongside the real 6CH/19CH modes.
+    final result = fixtureFromManualText('''
+DMX Channel Table
+DMX Channel 6CH / 19CH
+1.Channel 6CH Set the DMX channel mode to 6CH mode
+19CH Set the DMX channel mode to 19CH mode
+CH8 RGB Dual-Sign L 000-255 RGB TXT Mode 1
+CH9 RGB Dual-Sign R 000-255 RGB TXT Mode 2
+1 1 000-255 Tilt
+2 2 000-255 Pan
+''', 'shehds_test.pdf');
+    final sizes = result.fixture.modes
+        .map((mode) => mode.channelIds.length)
+        .toList();
+    expect(sizes, isNot(contains(1)));
+    expect(sizes, isNot(contains(2)));
+    expect(sizes, containsAll([6, 19]));
+  });
+
+  test('reads all three modes of a "Basic/Standard/Extended NCh" table '
+      'instead of stopping at a value sub-table with no position column', () {
+    // Corpus regression: 8cc4abe....txt (ADJ Hydro Hybrid) declares
+    // "Basic 24CH", "Standard 27CH" and "Extended 32CH" modes via a
+    // multi-column DMX Traits table, but two other bugs used to hide
+    // all but one of them: (1) a "UNIT 1 UNIT 2 UNIT 3 UNIT 4" table's
+    // last column ran into an unrelated "CHANNEL MODE" heading right
+    // after it (on the flattened text), misread as a bogus 4-channel
+    // mode; (2) once modeCounts held 2+ real counts already, a
+    // sequential-position scan of the DMX Traits table's own leftmost
+    // ("Basic") column — interrupted mid-table by a Color Macro value
+    // list with no position number of its own — landed on a stray
+    // partial count (6) that got appended as a bogus extra mode.
+    final result = fixtureFromManualText('''
+See the chart below for more details.
+                                     UNIT 1        UNIT 2         UNIT 3        UNIT 4
+              CHANNEL MODE
+                                    ADDRESS       ADDRESS        ADDRESS       ADDRESS
+                     24Ch              1             25             49            73
+                     27Ch              1             28             55            82
+                     32Ch              1             33             65            97
+
+DMX TRAITS
+               CHANNEL                    DMX                             FUNCTION
+Basic 24CH   Standard 27CH Extended 32CH VALUES
+     1             1              1       0-255 Pan
+                   2              2       0-255 Pan Fine
+    2              3              3       0-255 Tilt
+    3              5              5       0-255 Cyan
+                                          0-4   Color (open)
+                                          5-9   Red
+                                         10-14 Blue
+    6              8             11      110-114 Amber
+''', '8cc4abe7test.pdf');
+    final sizes =
+        result.fixture.modes.map((mode) => mode.channelIds.length).toList()
+          ..sort();
+    expect(sizes, [24, 27, 32]);
+  });
+
+  test('PHX_LVD-style installation manual with no DMX channels stays at 0 '
+      'modes and is still recognized as Altman', () {
+    // Regression floor: PHX_LVD_USER_MANUAL_49-0216_20230116.txt genuinely
+    // has no DMX channel table at all (it's an installation guide for a
+    // non-DMX luminaire series) — 0 modes is the correct answer for this
+    // fixture, not a defect, and must not start producing modes as a
+    // side effect of loosening the title/mode-count heuristics above.
+    final result = fixtureFromManualText('''
+PHX LVD Series                                                          Installation & Users Manual
+ The material in this manual is for information purposes only and is subject to change without notice. Altman Lighting assumes no
+ responsibility for any errors or omissions which may appear in this manual.
+''', 'PHX_LVD_USER_MANUAL_49-0216_20230116.pdf');
+    expect(result.fixture.modes, isEmpty);
+    expect(result.fixture.manufacturer, 'Altman');
   });
 }
 

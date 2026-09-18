@@ -135,6 +135,13 @@ class DmxtractState extends ChangeNotifier {
   bool get canUndo => _undo.isNotEmpty;
   bool get canRedo => _redo.isNotEmpty;
 
+  /// The page-marked text the parser read out of the manual (or photos),
+  /// exactly as handed to [fixtureFromManualText] — never the original
+  /// manual bytes/photos themselves. Used only for the diagnostic-report
+  /// download (see diagnostic_report.dart); empty before anything has been
+  /// read, or after a `.dmxtract.json` project was reopened directly.
+  String get manualText => _manualText;
+
   Future<void> pickManual() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
