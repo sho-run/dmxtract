@@ -166,6 +166,30 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
     final value = numberWords[match.group(1)!.toLowerCase()]!;
     if (!modeCounts.contains(value)) modeCounts.add(value);
   }
+  // A front-panel menu's own mode-select field can be the only place a
+  // manual declares its mode set, both in the menu-navigation prose
+  // ("the CHANNEL CH: menu variable field can be set to 06, 07, 08, or
+  // 12") and in the menu-reference table row ("CHANNEL   CH: 06, 07, 08,
+  // 12   DMX Channel Mode") — see Elation SixPar 200. Both print as
+  // "CH:" followed by a comma-separated list of channel counts, so that
+  // shape alone is corroboration enough without also requiring the word
+  // "CHANNEL" nearby: across this project's entire mined manual corpus,
+  // "CH:" followed by a number and a comma never appears for any other
+  // reason.
+  for (final match in RegExp(
+    r'CH:\s*((?:\d{1,3}\s*,\s*)+(?:or\s*)?\d{1,3})',
+    caseSensitive: false,
+  ).allMatches(flat)) {
+    for (final numberMatch in RegExp(r'\d{1,3}').allMatches(match.group(1)!)) {
+      final value = int.tryParse(numberMatch.group(0)!);
+      if (value != null &&
+          value > 0 &&
+          value <= 512 &&
+          !modeCounts.contains(value)) {
+        modeCounts.add(value);
+      }
+    }
+  }
   final tableCount = _tableChannelCount(text);
   if (tableCount >= 4) {
     final looksLikeMatrix = RegExp(
@@ -226,9 +250,10 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
     _addColorComponents(known, flat);
   }
   final namedModes = _namedDmxModeTables(text);
-  final matrixModes = namedModes.isEmpty
-      ? _modeMatrixTables(text)
-      : const <_DetectedModeTable>[];
+  final matrixResult = namedModes.isEmpty
+      ? _matrixLikeModeTables(text)
+      : (modes: const <_DetectedModeTable>[], mayHaveGaps: false);
+  final matrixModes = matrixResult.modes;
   final sequentialModes = namedModes.isEmpty && matrixModes.isEmpty
       ? _sequentialModeTables(text)
       : const <_DetectedModeTable>[];
@@ -272,7 +297,33 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
       model.toLowerCase().contains('lb150') ||
       _has(flat, r'5600\s*k.*grass\s+green.*reset.?function');
   if (structuredModes.isNotEmpty) {
+    // Two independent mode groups occasionally declare the same channel
+    // count under the same code (e.g. a mode-matrix table family with
+    // several cell-size sections, where "RGBWL 80ch" in one section and
+    // "RGBWL 16-bit 80ch" in another both size out to 80Ch): `code` alone
+    // then isn't unique across `structuredModes`, and reusing it verbatim
+    // for both `mode.id` and every channel's id prefix would silently
+    // alias the second mode's channels onto the first's ids (any
+    // `channels.firstWhere((c) => c.id == id)` lookup - including this
+    // file's own `fineOf` resolution in a wider table - would resolve to
+    // whichever mode happened to be assembled first). The *id* prefix is
+    // disambiguated on a repeat occurrence to keep every id unique; the
+    // displayed name/shortName must be disambiguated too (a suffix like
+    // " (2)"), or the exported GDTF ends up with two <DMXMode> elements
+    // sharing the same Name - these are genuinely distinct modes that
+    // merely happen to share a DMX footprint (see export_service.dart's
+    // `Name="${mode.name}"` and InitialFunction, which both assume
+    // mode.name is unique).
+    final modeCodeOccurrences = <String, int>{};
     for (final detectedMode in structuredModes) {
+      final occurrence = (modeCodeOccurrences[detectedMode.code] ?? 0) + 1;
+      modeCodeOccurrences[detectedMode.code] = occurrence;
+      final idPrefix = occurrence > 1
+          ? '${slug(detectedMode.code)}-$occurrence'
+          : slug(detectedMode.code);
+      final displayName = occurrence > 1
+          ? '${detectedMode.code} ($occurrence)'
+          : detectedMode.code;
       final modeChannelIds = <String>[];
       final coarseIds = <String, String>{};
       for (var index = 0; index < detectedMode.channelCount; index++) {
@@ -282,7 +333,7 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
           codedSupplementalRanges,
         );
         final channelId =
-            '${slug(detectedMode.code)}-${(index + 1).toString().padLeft(3, '0')}-${slug(definition.name)}';
+            '$idPrefix-${(index + 1).toString().padLeft(3, '0')}-${slug(definition.name)}';
         final relationshipKey = _relationshipKey(definition);
         final fineOf = definition.fineOf == null
             ? null
@@ -313,14 +364,28 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
       }
       modes.add(
         FixtureMode(
-          id: 'mode-${slug(detectedMode.code)}',
-          name: detectedMode.code,
-          shortName: detectedMode.code,
+          id: 'mode-$idPrefix',
+          name: displayName,
+          shortName: displayName,
           channelIds: modeChannelIds,
           breaks: (detectedMode.channelCount / 512).ceil().clamp(1, 64),
         ),
       );
     }
+    // A sparse mode-matrix grammar (see `mayHaveGaps` on
+    // [_matrixLikeModeTables]) only proves it found *a* table, not that it
+    // found the document's *entire* mode set - some manuals in this family
+    // print one or more personality groups in a still-unsupported table
+    // shape elsewhere in the same document. A generic-channel-count
+    // gap-fill pass used to run here to cover that gap, but measured
+    // against the eval corpus it was net-negative: it bought +0.003
+    // footprint recall while costing footprint precision (-0.012) and
+    // introducing both duplicate channel ids within a fixture (its
+    // one-shot `-${index+1}` collision suffix stopped being unique from
+    // the third gap-fill mode onward) and duplicate DMXMode names in the
+    // GDTF export. The gap is left unfilled instead - see `mayHaveGaps`'s
+    // own doc comment for the still-unsupported table shapes this leaves
+    // out.
   } else {
     for (var index = 0; index < count; index++) {
       final definition = useTableChannels && index < tableChannels.length
@@ -2279,51 +2344,293 @@ const _rangeSeparatorClass = '[-–—↔⇔ó]';
 
 /// A mode-matrix row's leading per-mode position cell: either a channel
 /// number or a dash meaning "this function does not exist in this mode".
-/// Shared between [_parseModeMatrixSection]'s row grammar and
-/// [_mergeSplitMatrixRows]'s line-rejoining pass so the two agree on what
-/// counts as a bare position token.
+/// The default `tokenPattern` for [_parseModeMatrixSection]'s row grammar
+/// and [_mergeSplitMatrixRows]'s line-rejoining pass, so the two agree on
+/// what counts as a bare position token. Robe's house style (see
+/// [_robeProtocolModeTables]) passes [_robeMatrixTokenPattern] instead: it
+/// prints an absent function as a bare asterisk, never a dash - and
+/// Robe's own value-range grammar *does* use a plain dash ("20-24 ..."),
+/// so accepting dash as an absent-token there too would misparse an
+/// ordinary Robe value line as a channel row.
 const _matrixTokenPattern = r'(?:\d{1,3}|[-–—])';
 
-List<_DetectedModeTable> _modeMatrixTables(String text) {
-  final headerPattern = RegExp(
-    r'^[ \t]*((?:\d{1,3}\s*-?\s*Ch\b[ \t]*){2,})Function\b',
-    caseSensitive: false,
-    multiLine: true,
-  );
-  final matches = headerPattern.allMatches(text).toList();
-  if (matches.isEmpty) return const [];
-  List<int> countsOf(RegExpMatch match) => RegExp(
-    r'(\d{1,3})\s*-?\s*Ch\b',
-    caseSensitive: false,
-  ).allMatches(match.group(1)!).map((m) => int.parse(m.group(1)!)).toList();
+/// Robe's absent-position token - see [_matrixTokenPattern].
+const _robeMatrixTokenPattern = r'(?:\d{1,3}|\*)';
 
+/// One mode-matrix header occurrence — from any grammar this file
+/// recognizes ([_labeledModeMatrixTables], [_sparseModeMatrixTables],
+/// [_robeProtocolModeTables]) — reduced to its byte offsets and the
+/// per-column channel counts it declares, so they can all be merged into a
+/// single position-ordered pass over the document via [_tablesFromHeaders].
+class _MatrixHeaderMatch {
+  _MatrixHeaderMatch({
+    required this.start,
+    required this.end,
+    required this.counts,
+  });
+  final int start;
+  final int end;
+  // A null entry means this header declares a column's mode but not its
+  // total channel count (Robe's "Mode/channel" grammar - see
+  // [_robeProtocolModeTables]); [_parseModeMatrixSection] infers it from
+  // the highest row position it actually observes in that column instead.
+  final List<int?> counts;
+}
+
+/// Turns a position-ordered list of mode-matrix header occurrences into the
+/// tables they bound: a run of headers declaring the same column counts (a
+/// page-break continuation) is one continuous table section, and a header
+/// with different counts starts a new one. Shared by every header grammar
+/// this file recognizes ([_labeledModeMatrixTables], [_sparseModeMatrixTables]
+/// and [_robeProtocolModeTables]'s two) so they only have to produce
+/// `_MatrixHeaderMatch`es, not re-implement this grouping.
+List<_DetectedModeTable> _tablesFromHeaders(
+  String text,
+  List<_MatrixHeaderMatch> headers, {
+  String tokenPattern = _matrixTokenPattern,
+}) {
+  headers.sort((a, b) => a.start.compareTo(b.start));
   final tables = <_DetectedModeTable>[];
   var index = 0;
-  while (index < matches.length) {
-    final counts = countsOf(matches[index]);
+  while (index < headers.length) {
+    final counts = headers[index].counts;
     if (counts.length < 2) {
       index++;
       continue;
     }
-    // A repeated header with the same column sizes (a page-break
-    // continuation) extends the current section instead of starting a new
-    // table; a header with different column sizes starts a new table.
     var next = index + 1;
-    while (next < matches.length &&
-        _sameCounts(countsOf(matches[next]), counts)) {
+    while (next < headers.length && _sameCounts(headers[next].counts, counts)) {
       next++;
     }
-    final sectionEnd = next < matches.length
-        ? matches[next].start
+    final sectionEnd = next < headers.length
+        ? headers[next].start
         : text.length;
-    final section = text.substring(matches[index].end, sectionEnd);
-    tables.addAll(_parseModeMatrixSection(section, counts));
+    // A run of same-counts headers (page-break continuations of one
+    // table) must have every occurrence's own header text excised from
+    // the section, not just the first's - otherwise a later repeat's
+    // bare-number prefix (e.g. the sparse grammar's "48 64 80 ...
+    // Function") still tokenizes as an ordinary row whose leading columns
+    // happen to equal each mode's own declared channel count, and
+    // clobbers that mode's real last row (see _sparseModeMatrixTables;
+    // COLORado Solo Bar 4 reprints its header on every page).
+    final buffer = StringBuffer();
+    var cursor = headers[index].end;
+    for (var k = index + 1; k < next; k++) {
+      buffer.write(text.substring(cursor, headers[k].start));
+      cursor = headers[k].end;
+    }
+    buffer.write(text.substring(cursor, sectionEnd));
+    tables.addAll(
+      _parseModeMatrixSection(
+        buffer.toString(),
+        counts,
+        tokenPattern: tokenPattern,
+      ),
+    );
     index = next;
   }
   return tables;
 }
 
-bool _sameCounts(List<int> a, List<int> b) {
+/// Grammar 1: each column names its own channel count with a "Ch" unit,
+/// e.g. "3Ch 12Ch 28Ch Function ..." (Chauvet DJ Rotosphere/Sentinel style).
+/// Unbounded column count - real manuals in this family top out at 3, but
+/// nothing here assumes that. This is the original, long-established
+/// mode-matrix grammar every real corpus fixture using it currently scores
+/// perfect footprint recall/precision on, so callers can trust a non-empty
+/// result from this one alone not to have missed a sibling table elsewhere
+/// in the same document the way the sparser grammars below sometimes do.
+List<_DetectedModeTable> _labeledModeMatrixTables(String text) {
+  final labeledHeaderPattern = RegExp(
+    r'^[ \t]*((?:\d{1,3}\s*-?\s*Ch\b[ \t]*){2,})Function\b',
+    caseSensitive: false,
+    multiLine: true,
+  );
+  List<int> labeledCountsOf(RegExpMatch match) => RegExp(
+    r'(\d{1,3})\s*-?\s*Ch\b',
+    caseSensitive: false,
+  ).allMatches(match.group(1)!).map((m) => int.parse(m.group(1)!)).toList();
+
+  final headers = [
+    for (final match in labeledHeaderPattern.allMatches(text))
+      _MatrixHeaderMatch(
+        start: match.start,
+        end: match.end,
+        counts: labeledCountsOf(match),
+      ),
+  ];
+  if (headers.isEmpty) return const [];
+  return _tablesFromHeaders(text, headers);
+}
+
+/// Grammar 2: the same table family printed with sparse leading columns but
+/// no per-column "Ch" unit - just the bare channel-count numbers themselves
+/// immediately before "Function", e.g. Chauvet Pro's COLORado Solo Bar 4
+/// "48 64 80 160 115 131 147 259 Function Value Percent/Setting" (one
+/// column per DMX personality: RGB 48ch through RGBWL Full 259ch, in header
+/// order - the same "declared column order maps to mode order" rule
+/// grammar 1 already relies on). A manual using this grammar also prints a
+/// "`<count>: <mode name>`" legend line just above the header's *first*
+/// occurrence, for a human reader.
+///
+/// Capped at 8 columns (2..8) and requiring the counts to be pairwise
+/// distinct, so an unrelated numbered list that happens to end in the word
+/// "Function" elsewhere in a manual can't be mistaken for a table header.
+/// That alone isn't enough, though: this bare "several numbers then
+/// Function" shape also matches Elation's unrelated "DMX CHANNEL TRAITS"
+/// table (e.g. FuzeWashZ350's "15 16 17 19 FUNCTION"), which has no such
+/// legend and whose modes are better served by the named/sequential table
+/// paths this grammar would otherwise preempt (see the caller ordering in
+/// [_matrixLikeModeTables]) - so a result here is only trusted when at
+/// least one candidate header is corroborated by that legend line
+/// appearing shortly before it; without it, this whole grammar backs off
+/// and returns nothing for the document. This is a *document-level* gate,
+/// not per-header: page-break repeats of a genuine header (COLORado Solo
+/// Bar 4 reprints its header on every page) don't carry the legend
+/// themselves, only the section's first occurrence does.
+///
+/// Even for a genuine match, only *some* of the document's personality
+/// groups may print this shape (COLORado Solo Bar 4's smallest, "1 Cell",
+/// group instead prints each personality pair as its own
+/// differently-shaped small table this file doesn't parse), so unlike
+/// grammar 1 a non-empty result here isn't proof the document's full mode
+/// set was found - see `mayHaveGaps` on [_matrixLikeModeTables].
+List<_DetectedModeTable> _sparseModeMatrixTables(String text) {
+  final bareHeaderPattern = RegExp(
+    r'^[ \t]*((?:\d{1,3}[ \t]+){1,7}\d{1,3})[ \t]+Function\b',
+    caseSensitive: false,
+    multiLine: true,
+  );
+  List<int> bareCountsOf(RegExpMatch match) => RegExp(
+    r'\d{1,3}',
+  ).allMatches(match.group(1)!).map((m) => int.parse(m.group(0)!)).toList();
+
+  final headers = [
+    for (final match in bareHeaderPattern.allMatches(text))
+      if (bareCountsOf(match).toSet().length == bareCountsOf(match).length)
+        _MatrixHeaderMatch(
+          start: match.start,
+          end: match.end,
+          counts: bareCountsOf(match),
+        ),
+  ];
+  if (headers.isEmpty) return const [];
+  final legendPattern = RegExp(r'\d{1,3}\s*:\s*[A-Za-z]');
+  final hasCorroboratingLegend = headers.any((header) {
+    final windowStart = header.start > 500 ? header.start - 500 : 0;
+    return legendPattern.hasMatch(text.substring(windowStart, header.start));
+  });
+  if (!hasCorroboratingLegend) return const [];
+  return _tablesFromHeaders(text, headers);
+}
+
+/// Robe's own "DMX protocol" per-mode channel table house style (seen on
+/// the Robin Footsie and LEDBeam families) - conceptually the same
+/// "several modes as parallel position columns" shape the two grammars
+/// above handle, but different enough in its header and absent-function
+/// marker to need its own recognizer:
+///
+///  - a "Mode/Total channels" or "Mode/channel" label line introduces the
+///    table (e.g. "Robin Footsie1.../... - DMX protocol" followed by
+///    "Mode/Total channels   DMX ...  Function ... Type of ... control");
+///  - the column-header row that actually repeats on every page is either
+///    "`<mode>/<total>  <mode>/<total>  ...  Value ...  control`" (Footsie:
+///    the total channel count for that mode is declared right there, e.g.
+///    "1/5   2/28   3/35   Value") or just "`<mode>  <mode>  ...  Value`
+///    ...  control" (LEDBeam: only the bare mode index, e.g. "1   2
+///    Value" - that mode's total isn't declared anywhere in the source
+///    and [_parseModeMatrixSection] infers it from the highest row
+///    position it actually observes, via a null `counts` entry);
+///  - "this function doesn't exist in this mode" is printed as a bare "*"
+///    rather than a dash (see [_robeMatrixTokenPattern]).
+///
+/// The bare "`<n> <n> ... Value`" shape on its own is indistinguishable from
+/// an ordinary row whose function happens to be literally named "Value N"
+/// (e.g. Chauvet Pro COLORado Solo Bar's own "3   Value 1" row - see
+/// [_sparseModeMatrixTables]), so a header candidate here is only accepted
+/// when a "Mode/(Total )channel(s)" label appears shortly before it.
+List<_DetectedModeTable> _robeProtocolModeTables(String text) {
+  final labelPattern = RegExp(
+    r'Mode\s*/\s*(?:Total\s+)?channels?\b',
+    caseSensitive: false,
+  );
+  bool hasNearbyLabel(int start) {
+    final windowStart = start > 400 ? start - 400 : 0;
+    return labelPattern.hasMatch(text.substring(windowStart, start));
+  }
+
+  final totalsHeaderPattern = RegExp(
+    r'^[ \t]*((?:\d{1,2}/\d{1,3}[ \t]+){1,7})Value\b',
+    multiLine: true,
+  );
+  final indexHeaderPattern = RegExp(
+    r'^[ \t]*((?:\d{1,2}[ \t]+){1,7})Value\b',
+    multiLine: true,
+  );
+
+  final headers = [
+    for (final match in totalsHeaderPattern.allMatches(text))
+      if (hasNearbyLabel(match.start))
+        _MatrixHeaderMatch(
+          start: match.start,
+          end: match.end,
+          counts: RegExp(r'\d{1,2}/(\d{1,3})')
+              .allMatches(match.group(1)!)
+              .map((m) => int.parse(m.group(1)!))
+              .toList(),
+        ),
+    for (final match in indexHeaderPattern.allMatches(text))
+      if (hasNearbyLabel(match.start))
+        _MatrixHeaderMatch(
+          start: match.start,
+          end: match.end,
+          counts: List<int?>.filled(
+            RegExp(r'\d{1,2}').allMatches(match.group(1)!).length,
+            null,
+          ),
+        ),
+  ];
+  if (headers.isEmpty) return const [];
+  return _tablesFromHeaders(
+    text,
+    headers,
+    tokenPattern: _robeMatrixTokenPattern,
+  );
+}
+
+/// Runs every "several DMX modes as parallel position columns" table
+/// grammar this file recognizes and returns the first one that finds
+/// anything - a manual only ever uses one of these families, so there's no
+/// need to merge results across them. `mayHaveGaps` tells the caller
+/// whether a non-empty result is trustworthy as the *complete* set of
+/// modes the document declares (grammar 1, long-established and already
+/// scoring perfect footprint recall/precision on every real corpus fixture
+/// that uses it) or might only be a subset, leaving some of the document's
+/// personality groups printed in a still-unsupported table shape elsewhere
+/// (grammar 2 and Robe's grammar, both new). Callers don't currently fill
+/// that gap from the generic channel-count scan - a generic gap-fill pass
+/// used to live here but measured out net-negative on the eval corpus (see
+/// the call sites) - so `mayHaveGaps` for now only documents the caveat for
+/// a future, better-corroborated fill.
+({List<_DetectedModeTable> modes, bool mayHaveGaps}) _matrixLikeModeTables(
+  String text,
+) {
+  final labeled = _labeledModeMatrixTables(text);
+  if (labeled.isNotEmpty) return (modes: labeled, mayHaveGaps: false);
+  final sparse = _sparseModeMatrixTables(text);
+  if (sparse.isNotEmpty) return (modes: sparse, mayHaveGaps: true);
+  final robe = _robeProtocolModeTables(text);
+  if (robe.isNotEmpty) return (modes: robe, mayHaveGaps: true);
+  // No mode-matrix grammar found anything at all - `mayHaveGaps` must stay
+  // false here (not true), even though this is the "new, less-trusted
+  // grammar" branch: a caller only reads `mayHaveGaps` once it already
+  // knows `modes` is non-empty (`matrixModes.isNotEmpty`), but a stray
+  // read without that guard must not be misled into treating "no matrix
+  // table exists in this document at all" as "found an incomplete one".
+  return (modes: const [], mayHaveGaps: false);
+}
+
+bool _sameCounts(List<int?> a, List<int?> b) {
   if (a.length != b.length) return false;
   for (var i = 0; i < a.length; i++) {
     if (a[i] != b[i]) return false;
@@ -2365,12 +2672,14 @@ class _MatrixRow {
 /// applies to a whole-line row match) before committing to the splice, so an
 /// unrelated short line — a stray page number, for instance — followed by
 /// ordinary prose can't get spliced into a bogus row.
-List<String> _mergeSplitMatrixRows(List<String> lines, List<int> counts) {
+List<String> _mergeSplitMatrixRows(
+  List<String> lines,
+  List<int?> counts, {
+  String tokenPattern = _matrixTokenPattern,
+}) {
   final columnCount = counts.length;
-  final bareTokensLine = RegExp(
-    '^(?:$_matrixTokenPattern[ \\t]+)*$_matrixTokenPattern\$',
-  );
-  final tokenMatcher = RegExp(_matrixTokenPattern);
+  final bareTokensLine = RegExp('^(?:$tokenPattern[ \\t]+)*$tokenPattern\$');
+  final tokenMatcher = RegExp(tokenPattern);
   final merged = <String>[];
   var index = 0;
   while (index < lines.length) {
@@ -2392,8 +2701,8 @@ List<String> _mergeSplitMatrixRows(List<String> lines, List<int> counts) {
       }
       final needed = columnCount - leadTokens.length;
       final prefixPattern = RegExp(
-        '^[ \\t]*(?:$_matrixTokenPattern[ \\t]+){${needed - 1}}'
-        '$_matrixTokenPattern(?=[ \\t]|\$)',
+        '^[ \\t]*(?:$tokenPattern[ \\t]+){${needed - 1}}'
+        '$tokenPattern(?=[ \\t]|\$)',
       );
       final prefixMatch = next < lines.length
           ? prefixPattern.firstMatch(lines[next])
@@ -2408,7 +2717,9 @@ List<String> _mergeSplitMatrixRows(List<String> lines, List<int> counts) {
         var plausible = true;
         for (var position = 0; position < combined.length; position++) {
           final value = combined[position];
-          if (value != null && (value < 1 || value > counts[position])) {
+          final bound = counts[position];
+          if (value != null &&
+              (value < 1 || (bound != null && value > bound))) {
             plausible = false;
             break;
           }
@@ -2428,14 +2739,15 @@ List<String> _mergeSplitMatrixRows(List<String> lines, List<int> counts) {
 
 List<_DetectedModeTable> _parseModeMatrixSection(
   String section,
-  List<int> counts,
-) {
+  List<int?> counts, {
+  String tokenPattern = _matrixTokenPattern,
+}) {
   final columnCount = counts.length;
   final rowPattern = RegExp(
-    '^[ \\t]*((?:$_matrixTokenPattern[ \\t]+){${columnCount - 1}}'
-    '$_matrixTokenPattern)(?:[ \\t]+(.+?))?[ \\t]*\$',
+    '^[ \\t]*((?:$tokenPattern[ \\t]+){${columnCount - 1}}'
+    '$tokenPattern)(?:[ \\t]+(.+?))?[ \\t]*\$',
   );
-  final tokenMatcher = RegExp(_matrixTokenPattern);
+  final tokenMatcher = RegExp(tokenPattern);
   // The same "start-end" separator class used throughout the file (dash
   // variants, arrows, and 'ó' — the character PDF.js resolves a particular
   // Chauvet PDF font's separator glyph to) rather than plain whitespace,
@@ -2447,15 +2759,26 @@ List<_DetectedModeTable> _parseModeMatrixSection(
   final oneNumberValue = RegExp(r'^[ \t]*(\d{1,3})[ \t]+(.+?)[ \t]*$');
   final columnSplit = RegExp(r'[ \t]{2,}');
 
-  // The header declares exactly how many channels each mode has, so once
-  // we've matched a row at the highest declared position of the widest mode
-  // and filled its ranges to full 0-255 coverage, the table is provably
-  // complete — see the `finalRow` check below, which bounds the section
-  // instead of letting it run unbounded to the header search's fallback of
-  // "rest of the document" and sweep up trailing prose/footers as ranges.
-  final maxCount = counts.reduce((a, b) => a > b ? a : b);
-  final maxIndex = counts.indexOf(maxCount);
+  // The header usually declares exactly how many channels each mode has,
+  // so once we've matched a row at the highest declared position of the
+  // widest mode and filled its ranges to full 0-255 coverage, the table is
+  // provably complete — see the `finalRow` check below, which bounds the
+  // section instead of letting it run unbounded to the header search's
+  // fallback of "rest of the document" and sweep up trailing prose/footers
+  // as ranges. A header that doesn't declare any column's total (Robe's
+  // "Mode/channel" grammar - see [_robeProtocolModeTables]) can't use this
+  // optimization; the caller's own section bound (the next header, or the
+  // end of the document) is all that limits how much text is consumed.
+  final knownCounts = <int>[for (final c in counts) ?c];
+  final maxCount = knownCounts.isEmpty
+      ? null
+      : knownCounts.reduce((a, b) => a > b ? a : b);
+  final maxIndex = maxCount == null ? -1 : counts.indexOf(maxCount);
   _MatrixRow? finalRow;
+
+  // Per-column highest position actually observed in a row, used to size a
+  // mode whose total channel count the header didn't declare.
+  final observedMax = List<int>.filled(columnCount, 0);
 
   final rows = <_MatrixRow>[];
   _MatrixRow? currentRow;
@@ -2466,6 +2789,7 @@ List<_DetectedModeTable> _parseModeMatrixSection(
   final lines = _mergeSplitMatrixRows(
     section.split(RegExp(r'\r\n|\r|\n')),
     counts,
+    tokenPattern: tokenPattern,
   );
   for (final rawLine in lines) {
     final trimmed = rawLine.trim();
@@ -2497,7 +2821,8 @@ List<_DetectedModeTable> _parseModeMatrixSection(
     if (rowTokens != null) {
       for (var i = 0; i < columnCount; i++) {
         final value = rowTokens[i];
-        if (value != null && (value < 1 || value > counts[i])) {
+        final bound = counts[i];
+        if (value != null && (value < 1 || (bound != null && value > bound))) {
           rowPlausible = false;
           break;
         }
@@ -2505,6 +2830,10 @@ List<_DetectedModeTable> _parseModeMatrixSection(
     }
     if (rowMatch != null && rowTokens != null && rowPlausible) {
       final tokens = rowTokens;
+      for (var i = 0; i < columnCount; i++) {
+        final value = tokens[i];
+        if (value != null && value > observedMax[i]) observedMax[i] = value;
+      }
       final restRaw = (rowMatch.group(2) ?? '').trim();
       expectMergeRange = false;
       if (restRaw.isEmpty) {
@@ -2543,6 +2872,7 @@ List<_DetectedModeTable> _parseModeMatrixSection(
       }
       rows.add(currentRow);
       if (finalRow == null &&
+          maxCount != null &&
           tokens.length > maxIndex &&
           tokens[maxIndex] == maxCount) {
         finalRow = currentRow;
@@ -2641,7 +2971,10 @@ List<_DetectedModeTable> _parseModeMatrixSection(
     final name = row.merged ? row.description : definition.name;
     for (var modeIndex = 0; modeIndex < columnCount; modeIndex++) {
       final position = row.tokens[modeIndex];
-      if (position == null || position < 1 || position > counts[modeIndex]) {
+      final bound = counts[modeIndex];
+      if (position == null ||
+          position < 1 ||
+          (bound != null && position > bound)) {
         continue;
       }
       parsedByMode[modeIndex].putIfAbsent(
@@ -2665,20 +2998,25 @@ List<_DetectedModeTable> _parseModeMatrixSection(
 
   return [
     for (var modeIndex = 0; modeIndex < columnCount; modeIndex++)
-      _DetectedModeTable(
-        code: '${counts[modeIndex]}Ch',
-        channelCount: counts[modeIndex],
-        parsedCount: parsedByMode[modeIndex].length,
-        channels: [
-          for (var position = 1; position <= counts[modeIndex]; position++)
-            parsedByMode[modeIndex][position] ??
-                _DetectedChannel(
-                  name: 'Channel $position',
-                  kind: 'generic',
-                  confidence: .25,
-                ),
-        ],
-      ),
+      if ((counts[modeIndex] ?? observedMax[modeIndex]) > 0)
+        _DetectedModeTable(
+          code: '${counts[modeIndex] ?? observedMax[modeIndex]}Ch',
+          channelCount: counts[modeIndex] ?? observedMax[modeIndex],
+          parsedCount: parsedByMode[modeIndex].length,
+          channels: [
+            for (
+              var position = 1;
+              position <= (counts[modeIndex] ?? observedMax[modeIndex]);
+              position++
+            )
+              parsedByMode[modeIndex][position] ??
+                  _DetectedChannel(
+                    name: 'Channel $position',
+                    kind: 'generic',
+                    confidence: .25,
+                  ),
+          ],
+        ),
   ];
 }
 
