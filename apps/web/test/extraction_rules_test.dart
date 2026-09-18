@@ -1498,11 +1498,14 @@ DMX Channel Table
     // DMX TRAITS" instead of "... User Manual"; the manual-title pattern
     // used to only recognize "User Manual"/"Owner's Manual" suffixes, so
     // this fell through to the hash-named source file as the model.
-    final result = fixtureFromManualText('''ADJ VIZI XTREME - DMX TRAITS
+    final result = fixtureFromManualText(
+      '''ADJ VIZI XTREME - DMX TRAITS
 CHANNEL DMX FUNCTION
 28Ch 40Ch VALUES
 1 1 000-255 Pan Movement
-ADJ reserves the right to change specifications without notice.''', '15a2a6ff145475d6dd14364285982a4a87a4129d.pdf');
+ADJ reserves the right to change specifications without notice.''',
+      '15a2a6ff145475d6dd14364285982a4a87a4129d.pdf',
+    );
     expect(result.fixture.manufacturer, 'ADJ');
     expect(result.fixture.model, 'VIZI XTREME');
   });

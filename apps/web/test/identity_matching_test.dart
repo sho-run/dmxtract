@@ -177,8 +177,7 @@ CEO: Martin Werner
     // single "ADJ" hit is not enough evidence to prefer over an honest
     // "Unknown manufacturer".
     test('a single OCR-split "Adj" (from "Adjust") does not attribute '
-        'manufacturer "ADJ" when the document never otherwise mentions it',
-        () {
+        'manufacturer "ADJ" when the document never otherwise mentions it', () {
       final result = fixtureFromManualText(
         'Platinum Spot 15R Pro. Effect Manual Control PAN =XXX Fine '
             'adjustment of the lamp: Adj Calibrate Values Calibrate '
@@ -276,8 +275,7 @@ CEO: Martin Werner
   group('title/model self-collision guard', () {
     test('a brand named in the title stays a candidate when it also '
         'repeats independently throughout the body, instead of being '
-        'excluded outright as if it were only the model name repeating',
-        () {
+        'excluded outright as if it were only the model name repeating', () {
       final result = fixtureFromManualText(
         '=== DMXTRACT PAGE 1 ===\n'
             'ROBE Robin Spikie / User Manual\n'
