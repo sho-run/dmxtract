@@ -1,4 +1,5 @@
 import 'brand_catalog.dart';
+import 'channel_attribute_map.dart';
 import 'model.dart';
 
 class ExtractionResult {
@@ -297,6 +298,7 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
             fineOf: fineOf,
             color: definition.color,
             confidence: definition.confidence,
+            gdtfAttribute: definition.gdtfAttribute,
             ranges: supplementalRanges.isNotEmpty
                 ? supplementalRanges
                 : definition.ranges?.isNotEmpty == true
@@ -342,6 +344,7 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
           fineOf: definition.fineOf,
           color: definition.color,
           confidence: definition.confidence,
+          gdtfAttribute: definition.gdtfAttribute,
           ranges: definition.ranges?.isNotEmpty == true
               ? definition.ranges!
               : _knownRanges(definition.kind, isLb150: isLb150),
@@ -1571,6 +1574,7 @@ class _DetectedChannel {
     this.color,
     this.ranges,
     this.confidence = .9,
+    this.gdtfAttribute,
   });
 
   final String name;
@@ -1579,6 +1583,14 @@ class _DetectedChannel {
   final String? color;
   final List<DmxRange>? ranges;
   final double confidence;
+
+  /// A specific GDTF attribute this channel is confident enough to name
+  /// directly, from [gdtfAttributeForChannelName]'s mined name-to-
+  /// attribute table — e.g. "Gobo1PosRotate" rather than the coarse
+  /// "Gobo1" every generic [kind] `goboWheel` channel otherwise defaults
+  /// to (see `defaultGdtfAttribute`). Null means "no opinion, let the
+  /// usual kind/color-based default apply."
+  final String? gdtfAttribute;
 }
 
 class _DetectedModeTable {
@@ -1741,6 +1753,29 @@ Map<int, _DetectedChannel> _parseNamedModeRows(
       if (description.isEmpty || _looksLikePageFurniture(description)) {
         continue;
       }
+      // A row whose only real content is a byte-order/bit-depth marker
+      // ("LSB", "16 bit", a bare "Fine") and no attribute word of its own
+      // is this fixture's way of printing a fine byte's row without
+      // repeating the coarse channel's name (real corpus shape: a coarse
+      // "Dimmer (MSB)" row immediately followed by a lone "LSB"-only
+      // continuation). Treat it as the fine companion of the immediately
+      // preceding coarse channel, the same way [containsFineValue] above
+      // already does for a bare 0-65535/32768/65535 value with no text.
+      final isBareFineMarker = RegExp(
+        r'^(?:lsb|16[ -]?bit|fine)$',
+        caseSensitive: false,
+      ).hasMatch(description);
+      if (isBareFineMarker &&
+          mostRecentCoarse != null &&
+          position == mostRecentCoarse + 1) {
+        final coarse = parsed[mostRecentCoarse];
+        if (coarse != null) {
+          parsed[position] = _fineChannelFor(coarse);
+          expectedPosition++;
+          pendingFunction = null;
+          continue;
+        }
+      }
       final definition = _classifyTableChannel(description, position);
       final ranges = _rangesFromLine(rest, definition.name, definition.kind);
       parsed.putIfAbsent(
@@ -1752,6 +1787,7 @@ Map<int, _DetectedChannel> _parseNamedModeRows(
           color: definition.color,
           ranges: ranges,
           confidence: definition.confidence,
+          gdtfAttribute: definition.gdtfAttribute,
         ),
       );
       if (definition.fineOf == null) mostRecentCoarse = position;
@@ -1899,6 +1935,10 @@ _DetectedChannel _fineChannelFor(_DetectedChannel coarse) => _DetectedChannel(
   fineOf: _relationshipKey(coarse),
   color: coarse.color,
   confidence: coarse.confidence,
+  // A fine byte shares its coarse channel's GDTF Attribute (that's what
+  // makes it a fine byte rather than an independent control) — see
+  // model.dart's DmxChannel.fineOf doc.
+  gdtfAttribute: coarse.gdtfAttribute,
 );
 
 String _descriptionAfterDmxValue(String value) => value
@@ -2192,6 +2232,7 @@ void _parseParallelPersonalityRows(
         color: definition.color,
         ranges: ranges,
         confidence: definition.confidence,
+        gdtfAttribute: definition.gdtfAttribute,
       );
     }
   }
@@ -2612,6 +2653,11 @@ List<_DetectedModeTable> _parseModeMatrixSection(
           color: definition.color,
           ranges: List<DmxRange>.of(row.ranges),
           confidence: definition.confidence,
+          // A merged row's displayed name is the combined "A / B" label,
+          // not `definition.name` (classified from just the last of the
+          // two folded-in descriptions) — the mined attribute for that
+          // one description alone isn't a match for the combined thing.
+          gdtfAttribute: row.merged ? null : definition.gdtfAttribute,
         ),
       );
     }
@@ -2896,6 +2942,7 @@ void _parseSequentialModeRows(
           color: definition.color,
           ranges: <DmxRange>[],
           confidence: definition.confidence,
+          gdtfAttribute: definition.gdtfAttribute,
         ),
       );
       currentChannel = position;
@@ -3518,6 +3565,7 @@ _DetectedChannel _mergeDetectedChannel(
     color: chosen.color,
     confidence: chosen.confidence,
     ranges: ranges,
+    gdtfAttribute: chosen.gdtfAttribute,
   );
 }
 
@@ -3529,6 +3577,7 @@ _DetectedChannel _withConfidence(_DetectedChannel channel, double confidence) {
     color: channel.color,
     ranges: channel.ranges,
     confidence: confidence,
+    gdtfAttribute: channel.gdtfAttribute,
   );
 }
 
@@ -3731,23 +3780,86 @@ List<_DetectedChannel> _parseTableSection(String section, int count) {
   final pendingRanges = <DmxRange>[];
   var expected = 1;
   for (final line in section.split(RegExp(r'[\r\n]+'))) {
-    final match = RegExp(r'^\s*(\d{1,3})\s+(.+?)\s*$').firstMatch(line);
-    if (match != null && int.tryParse(match.group(1)!) == expected) {
+    var match = RegExp(r'^\s*(\d{1,3})\s+(.+?)\s*$').firstMatch(line);
+    if (match == null || int.tryParse(match.group(1)!) != expected) {
+      // Sparse leading position columns (blank/dash when a row's function
+      // doesn't apply to one of the fixture's other, simpler personalities
+      // that share this same table) can push the table's real sequential
+      // position past first place — real corpus shapes: Chauvet COLORado
+      // SOLO Bar 4's 16-cell "XY | Ext. Function" table (one throwaway
+      // column: "– 2 Fine dimmer 1 000 255 0-100%") and the same
+      // fixture's 259-channel "RGBWL Ext./Full" table, which stacks up to
+      // seven personality columns ahead of the real "Ext. Function"
+      // number ("– – – – 1 1 1 1 Dimmer 1 ...", "– – – – – – – 2 Fine
+      // dimmer 1 ..."). Greedily consume up to seven throwaway
+      // digit/dash tokens and capture the number immediately before the
+      // description — the one those other tables' single-throwaway shape
+      // already relied on — so both widths resolve to the same rightmost
+      // number. Only tried once the plain single-leading-number match
+      // above fails, so an ordinary "N <description>" table is never
+      // affected.
+      final secondary = RegExp(
+        r'^\s*(?:(?:\d{1,3}|[-–—])\s+){1,7}(\d{1,3})\s+(.+?)\s*$',
+      ).firstMatch(line);
+      match = secondary != null && int.tryParse(secondary.group(1)!) == expected
+          ? secondary
+          : null;
+    }
+    if (match != null) {
       var description = match.group(2)!;
       description = description.replaceAll(RegExp(r'\s+'), ' ').trim();
       final base = _classifyTableChannel(description, expected);
+      // Values-column bleed guard: a genuine channel-function row always
+      // has some descriptive text (a word), not just digits. A row whose
+      // classified name comes out as bare digits means every real column
+      // was numeric — a multi-value data table (a Color Macros Chart's
+      // "MACRO | DMX VALUE | RED | GREEN | BLUE | ..." rows, say) that
+      // happens to start each row with a small sequential number, not an
+      // actual per-channel function table. [_classifyTableChannel]'s
+      // leading-mode-column stripping mis-anchors on it and leaves one
+      // stray value column masquerading as the channel name (real corpus
+      // shapes: ADJ_Encore_LP12Z_IP's "18CH" mode reading macro RGB
+      // values 80/80/77/83... as channel names, ADJ_Focus_Wash_400's
+      // "17Ch" mode reading the macro table's trailing all-zero column as
+      // "0" for every channel). Fall back to a neutral "Channel N" name
+      // instead of fabricating one from the bled value column, and drop
+      // the bogus `kind`/`gdtfAttribute` guess along with it (a bare
+      // number never resolves through the mined map either way, so `base`
+      // itself is already `kind: 'generic'` here — this just also throws
+      // away whatever [_rangesFromLine] parsed the numeric "name" text as
+      // a range).
+      //
+      // Deliberately NOT rejecting the row outright (no entry, `expected`
+      // held back): a genuine channel table can have one stray numeric-
+      // looking row sitting among otherwise-good rows (the mis-anchor is
+      // per-row, not per-table), and dropping the entry shrinks
+      // `detected.length` right when [_tableChannels]'s adoption
+      // threshold (`tableChannels.length >= 4 && >= half of count`) is
+      // deciding whether to use this table at all — confirmed on real
+      // data: rejecting outright pushed ADJ_Vizi_Beam_RX2_UM's real, 159-
+      // range table below that threshold, discarding it wholesale for
+      // the canonical-guess fallback's single default range per channel.
+      // Keeping the row (renamed, not removed) preserves both the
+      // channel count the threshold sees and the row's own range data,
+      // and also keeps `expected` in lock-step with the row numbers the
+      // source document actually prints, so a later real "N
+      // <description>" row still matches instead of the rest of the
+      // table truncating into this one row's rejection.
+      final isValuesColumnBleed = RegExp(r'^\d+$').hasMatch(base.name);
+      final name = isValuesColumnBleed ? 'Channel $expected' : base.name;
       final ranges = <DmxRange>[
         ...pendingRanges,
-        ..._rangesFromLine(description, base.name, base.kind),
+        ..._rangesFromLine(description, name, base.kind),
       ]..sort((a, b) => a.start.compareTo(b.start));
       pendingRanges.clear();
       detected.add(
         _DetectedChannel(
-          name: base.name,
-          kind: base.kind,
-          fineOf: base.fineOf,
-          color: base.color,
+          name: name,
+          kind: isValuesColumnBleed ? 'generic' : base.kind,
+          fineOf: isValuesColumnBleed ? null : base.fineOf,
+          color: isValuesColumnBleed ? null : base.color,
           ranges: ranges,
+          gdtfAttribute: isValuesColumnBleed ? null : base.gdtfAttribute,
         ),
       );
       expected++;
@@ -3833,7 +3945,22 @@ _DetectedChannel _classifyTableChannel(String value, int channel) {
         '',
       )
       .replaceFirst(RegExp(r'^(?:(?:\d{1,3}|-)\s+){1,6}'), '');
-  final lower = withoutModeColumns.toLowerCase().replaceAll('_', ' ');
+  // Coarse/fine byte-order labels ("Pan MSB"/"Tilt LSB", a bare "16 bit"/
+  // "16-bit" tag) are a second common notation for a coarse/fine pair,
+  // alongside the literal word "fine" every branch below already looks
+  // for (real corpus shape: Martin_MAC700Profile_UM prints "Dimmer (MSB)"
+  // for the coarse row and "Dimmer, fine (LSB)" for its fine byte).
+  // Normalizing MSB away and LSB/16-bit onto the word "fine" here, once,
+  // lets every attribute branch's existing fine detection cover this
+  // notation too instead of duplicating msb/lsb/16-bit checks in each of
+  // them — "Pan MSB" reads exactly like plain "Pan" (msb is the default,
+  // most-significant byte), and "Pan LSB"/"Pan 16 Bit" reads exactly
+  // like "Pan fine".
+  final lower = withoutModeColumns
+      .toLowerCase()
+      .replaceAll('_', ' ')
+      .replaceAll(RegExp(r'\bmsb\b'), '')
+      .replaceAll(RegExp(r'\b(?:lsb|16[ -]?bit)\b'), 'fine');
   String? numberedSuffix(String label) => RegExp(
     '\\b$label\\s+(\\d{1,3}(?:\\s*[-–—]\\s*\\d{1,3})?)',
   ).firstMatch(lower)?.group(1);
@@ -4141,12 +4268,42 @@ _DetectedChannel _classifyTableChannel(String value, int channel) {
       )
       .replaceAll(RegExp(r'^[-–—\s]+'), '')
       .trim();
-  return _DetectedChannel(
-    name: cleaned.isEmpty
-        ? 'Channel $channel'
-        : cleaned.substring(0, cleaned.length.clamp(0, 48)),
-    kind: 'generic',
-  );
+  final name = cleaned.isEmpty
+      ? 'Channel $channel'
+      : cleaned.substring(0, cleaned.length.clamp(0, 48));
+  // Last resort, tried only once every hand-written branch above has
+  // already failed to match: look the (cleaned) description up against
+  // the majority name-to-GDTF-attribute table mined from unified.db
+  // (scripts/update_channel_attribute_map.py). It only turns some of
+  // what used to fall all the way through to a bare "generic"/NoFeature
+  // channel into a specific attribute ("Gobo1PosRotate", "HSB_Hue", a
+  // zoned "Color4") the hand-written branches never modeled at all.
+  //
+  // Deliberately attribute-only: `kind` stays 'generic' and `fineOf` is
+  // never set here, even though [kindForGdtfAttribute] could answer both.
+  // `kind` isn't just cosmetic — callers key row-acceptance bookkeeping
+  // off it (`_parseNamedModeRows`'s `mostRecentCoarse`, this file's
+  // `_relationshipKey`/`coarseIds` matrix merge), so changing it can flip
+  // which manual row a later position accepts, not just how this one
+  // channel is labeled (confirmed regression: AmericanDJ_Ultra_Hex_Bar_12
+  // channel 10 moved from the correct "White" row to a DMX-value chart's
+  // "Program 10" row once `kind` started following the mined attribute).
+  // And a mined `fineOf` would need to name the coarse channel's
+  // [_relationshipKey], not a bare kind string — `coarseIds` is keyed by
+  // the former (a compound key for every kind [_relationshipKey] knows
+  // specially, e.g. "intensity:dimmer" or "pan:2") and stays keyed
+  // 'generic' for every other kind, so a bare-kind `fineOf` either can
+  // never match its real coarse channel (silently dropped) or, for any
+  // mined attribute [kindForGdtfAttribute] doesn't specialize, matches
+  // 'generic' and adopts the first unrelated generic channel in the mode
+  // as its coarse. A fine byte's Attribute still comes through unchanged
+  // — it's carried on `gdtfAttribute`, which fine-channel construction
+  // (`_fineChannelFor`) already copies from its coarse channel.
+  final mined = gdtfAttributeForChannelName(name);
+  if (mined != null) {
+    return _DetectedChannel(name: name, kind: 'generic', gdtfAttribute: mined);
+  }
+  return _DetectedChannel(name: name, kind: 'generic');
 }
 
 List<DmxRange> _knownRanges(String kind, {required bool isLb150}) {
