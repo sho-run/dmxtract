@@ -2024,6 +2024,238 @@ Simple DMX Mode
     expect(channels[2].name, 'Iris');
     expect(channels[2].gdtfAttribute, 'Iris');
   });
+
+  test('parses a sparse 8-column mode-matrix header with no "Ch" unit '
+      '(Chauvet Pro COLORado Solo Bar 4)', () {
+    // A trimmed but real excerpt of the COLORado Solo Bar 4 manual's "RGB
+    // 48ch - RGBWL Full 259ch" table (testcorpus/
+    // ChauvetPro_COLORadoSOLOBar4_UM.pdf): eight parallel personality
+    // columns (48/64/80/160/115/131/147/259 channels) sharing one
+    // Function/Value column, header declared as bare channel-count
+    // numbers with no "Ch" suffix (unlike the 3-column Chauvet DJ
+    // grammar [_labeledModeMatrixTables] already handles), and a dash
+    // meaning a function doesn't exist in that mode. The smaller modes
+    // (48/64/80/160ch) skip "Dimmer 1"/"Fine dimmer 1" entirely and pick
+    // up at "Red 1" as their own first channel - exercising the sparse,
+    // not-just-narrower relationship between columns this dialect needs.
+    const manual = '''CHAUVET Professional
+COLORado Solo Bar 4 User Manual Rev. 1
+Operation
+RGB 48ch - RGBWL Full 259ch
+259: RGBWL Full 259ch, 147: RGBWL Ext. 147ch, 131: RGBW Ext. 131ch, 115: RGB Ext. 115ch,
+160:RGBWL 16-bit 160ch, 80: RGBWL 80ch, 64: RGBW 64ch, 48: RGB 48ch
+48 64 80 160 115 131 147 259 Function                Value   Percent/Setting
+ – – – –      1   1   1   1 Dimmer 1               000  255 0-100%
+ – – – –      –   –   –   2 Fine dimmer 1          000  255 0-100%
+ 1 1 1 1      2   2   2   3 Red 1                  000  255 0-100%
+ – – – 2      –   –   –   4 Fine red 1             000  255 0-100%
+''';
+    final result = fixtureFromManualText(
+      manual,
+      'ChauvetPro_COLORadoSOLOBar4_UM.pdf',
+    );
+    expect(result.fixture.modes.map((mode) => mode.name), [
+      '48Ch',
+      '64Ch',
+      '80Ch',
+      '160Ch',
+      '115Ch',
+      '131Ch',
+      '147Ch',
+      '259Ch',
+    ]);
+    expect(result.fixture.modes.map((mode) => mode.channelIds.length), [
+      48,
+      64,
+      80,
+      160,
+      115,
+      131,
+      147,
+      259,
+    ]);
+
+    DmxChannel channelAt(String modeName, int position) {
+      final mode = result.fixture.modes.firstWhere(
+        (mode) => mode.name == modeName,
+      );
+      final id = mode.channelIds[position - 1];
+      return result.fixture.channels.firstWhere((item) => item.id == id);
+    }
+
+    // The widest mode (259Ch) has all four rows as its own channels 1-4.
+    expect(channelAt('259Ch', 1).name, 'Dimmer 1');
+    expect(channelAt('259Ch', 2).fineOf, channelAt('259Ch', 1).id);
+    expect(channelAt('259Ch', 3).name, 'Red 1');
+    expect(channelAt('259Ch', 4).fineOf, channelAt('259Ch', 3).id);
+
+    // The smallest mode (48Ch) skips both dimmer channels (dash in every
+    // one of its rows) and starts directly at "Red 1" as channel 1 - the
+    // sparse-column mapping the task exists to fix.
+    expect(channelAt('48Ch', 1).name, 'Red 1');
+    expect(channelAt('48Ch', 1).name.startsWith('Channel '), isFalse);
+
+    // Every mode's channel ids are unique even though several modes
+    // share the same channel count elsewhere in a real manual (see the
+    // idPrefix-collision fix this table family exposed) - a smoke check
+    // that lookups above actually resolved distinct channels, not one
+    // channel aliased across modes.
+    final allIds = result.fixture.channels.map((c) => c.id).toList();
+    expect(allIds.toSet().length, allIds.length);
+  });
+
+  test('parses Robe\'s "Mode/Total channels" DMX protocol table with an '
+      'asterisk absent-marker (Robin Footsie)', () {
+    // A trimmed but real excerpt of the Robin Footsie1/Footsie1 Slim
+    // manual's "DMX protocol" table (testcorpus/Robe_Footsie1_UM.pdf):
+    // three parallel mode columns declared as "<mode>/<total-channels>"
+    // pairs (1/5, 2/28, 3/35 - matching this fixture's real GDTF truth
+    // footprints), an asterisk (not a dash) meaning a function doesn't
+    // exist in that mode, and every range on its own line below the row
+    // rather than inline with the function name.
+    const manual = '''ROBE LIGHTING
+Robin Footsie1 User Manual
+DMX protocol
+Robin Footsie1TM/Robin Footsie1TM Slim - DMX protocol
+Version: 1.4 Mode 1-Simple mode, Mode 2 -Standard 16-bit, Mode 3-Standard 16-bit & PIP
+Mode/Total channels             DMX                                             Type of
+                                                     Function
+   1/5          2/28        3/35         Value                                  control
+     *            1            1                   Power/Special functions
+                                          0-9      Reserved (0=default)
+                                         10-255    Reserved
+     *            2            2                   LED frequency selection
+                                          0-255     PWM frequency
+     1            3            3                   Dimmer
+                                          0-255     Dimmer intensity from 0% to 100%
+''';
+    final result = fixtureFromManualText(manual, 'Robe_Footsie1_UM.pdf');
+    expect(result.fixture.modes.map((mode) => mode.name), [
+      '5Ch',
+      '28Ch',
+      '35Ch',
+    ]);
+    expect(result.fixture.modes.map((mode) => mode.channelIds.length), [
+      5,
+      28,
+      35,
+    ]);
+
+    DmxChannel channelAt(String modeName, int position) {
+      final mode = result.fixture.modes.firstWhere(
+        (mode) => mode.name == modeName,
+      );
+      final id = mode.channelIds[position - 1];
+      return result.fixture.channels.firstWhere((item) => item.id == id);
+    }
+
+    // Mode 1 (5Ch) skips "Power/Special functions" and "LED frequency
+    // selection" entirely (asterisk in both) and starts at "Dimmer" -
+    // the same sparse-column mapping as the Chauvet dialect above, this
+    // time keyed off "*" instead of a dash.
+    expect(channelAt('5Ch', 1).name, 'Dimmer');
+    expect(
+      channelAt(
+        '5Ch',
+        1,
+      ).ranges.map((range) => (range.start, range.end, range.name)),
+      [(0, 255, 'Dimmer intensity from 0% to 100%')],
+    );
+
+    // Mode 2 (28Ch) has all three rows as its own channels 1-3.
+    expect(channelAt('28Ch', 1).name, 'Power/Special functions');
+    expect(
+      channelAt('28Ch', 1).ranges.map((range) => (range.start, range.end)),
+      [(0, 9), (10, 255)],
+    );
+    expect(channelAt('28Ch', 2).name, 'LED frequency selection');
+    expect(channelAt('28Ch', 3).name, 'Dimmer');
+  });
+
+  test('infers a Robe "Mode/channel" table\'s per-mode channel count from '
+      'the highest row position observed (Robin LEDBeam)', () {
+    // A trimmed but real excerpt of the Robin LEDBeam 150 FW manual's
+    // "DMX protocol" table (testcorpus/Robe_LEDBeam150FW_UM.pdf): two
+    // parallel mode columns declared only by their bare mode index (no
+    // "/<total>" - unlike the Footsie excerpt above), so each mode's
+    // real channel count (this fixture's GDTF truth: 22 and 16) has to
+    // come from the highest position actually printed for that column,
+    // not from the header. Mode 2's own ranges use a plain dash
+    // ("0 - 255") - the reason [_robeMatrixTokenPattern] (asterisk-only)
+    // exists as a distinct token pattern from the Chauvet family's
+    // dash-based one: accepting a dash as an absent-marker here too
+    // would misread a value line such as "20-24 ..." as a channel row.
+    const manual = '''ROBE LIGHTING
+Robin LEDBeam 150 FW User Manual
+DMX protocol
+Robin LEDdBeam 150/LEDBeam 150 FW/LEDBeam 150Q/LEDBeam 150 FWQ - DMX protocol
+Version: 1.7 Mode 1-Standard 16-bit, Mode 2 -Reduced 8-bit
+Mode/channel    DMX                                               Type of
+                                       Function
+ 1      2       Value                                             control
+ 1      1                 Pan (8 bit)
+                0 - 255   Pan movement by 450 degrees (128=default)
+ 2      2                 Pan Fine (16 bit)
+                0 - 255   Fine control of pan movement (0=default)
+ 21     16                    Dimmer intensity (8 bit)
+                 0 - 255     Dimmer intensity from 0% to 100% (0=default)
+ 22     *                    Dimmer intensity - fine (16 bit)
+                 0 - 255     Fine dimming (0=default)
+''';
+    final result = fixtureFromManualText(manual, 'Robe_LEDBeam150FW_UM.pdf');
+    expect(result.fixture.modes.map((mode) => mode.name), ['22Ch', '16Ch']);
+    expect(result.fixture.modes.map((mode) => mode.channelIds.length), [
+      22,
+      16,
+    ]);
+
+    DmxChannel channelAt(String modeName, int position) {
+      final mode = result.fixture.modes.firstWhere(
+        (mode) => mode.name == modeName,
+      );
+      final id = mode.channelIds[position - 1];
+      return result.fixture.channels.firstWhere((item) => item.id == id);
+    }
+
+    expect(channelAt('22Ch', 1).name, contains('Pan'));
+    expect(channelAt('22Ch', 21).name, contains('Dimmer'));
+    expect(channelAt('22Ch', 22).fineOf, channelAt('22Ch', 21).id);
+    // Mode 2 (16Ch) has no 22nd channel at all - the fine dimmer byte
+    // (asterisk in mode 2's column) doesn't exist in this mode, and its
+    // *own* real last channel is position 16 ("Dimmer intensity"), not a
+    // placeholder padded out to mode 1's width.
+    expect(channelAt('16Ch', 16).name, contains('Dimmer'));
+    expect(channelAt('16Ch', 16).name.startsWith('Channel '), isFalse);
+  });
+
+  test('reads a front-panel menu\'s "CH: N, N, N, N" field as mode-count '
+      'evidence (Elation SIXPAR 200)', () {
+    // A trimmed but real excerpt of the Elation SIXPAR 200 manual
+    // (corpus_probe/Elation_SixPar200_UM.pdf), stripped down to just its
+    // menu-navigation prose and menu-reference table row - no DMX
+    // channel table at all - so this exercises the "CH:" mode-count
+    // scan on its own, not in combination with the numeric "6 CH 7 CH
+    // 8 CH 12 CH" table header elsewhere in the real manual (which the
+    // generic "<N> CH" scan already picks up independently).
+    const manual = '''ELATION SIXPAR 200
+SIXPAR 200 User Manual
+FIXTURE MENU
+During normal operation, pressing the MODE button will navigate through the
+different function menus. For example, the CHANNEL CH: menu variable field can
+be set to 06, 07, 08, or 12. Pressing the ENTER button once will confirm your
+selected value.
+
+    MENU               OPTIONS / VALUES                       DESCRIPTION
+CHANNEL      CH: 06, 07, 08, 12                       DMX Channel Mode
+''';
+    final result = fixtureFromManualText(manual, 'Elation_SixPar200_UM.pdf');
+    expect(result.fixture.modes.map((mode) => mode.channelIds.length).toSet(), {
+      6,
+      7,
+      8,
+      12,
+    });
+  });
 }
 
 /// Builds a synthetic "N-channel mode" manual excerpt modeled on a
