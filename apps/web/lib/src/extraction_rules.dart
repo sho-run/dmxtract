@@ -1,3 +1,4 @@
+import 'brand_catalog.dart';
 import 'model.dart';
 
 class ExtractionResult {
@@ -101,10 +102,23 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
       _firstNonStopwordTitle(titledModelMatch);
   final fallback = _modelFromFilename(sourceName);
   final model = modelFromManual ?? fallback ?? 'Unknown fixture';
-  final manufacturerFromManual = _manufacturer(flat);
-  final manufacturer = manufacturerFromManual == 'Unknown manufacturer'
-      ? _manufacturer(sourceName)
-      : manufacturerFromManual;
+  // A model recovered only from the filename (no in-document title match)
+  // is an honest guess, not a read — score it low below and let the
+  // help-question logic flag it, rather than presenting it with the same
+  // confidence as a title actually read off the manual's cover.
+  final modelIsFilenameEcho = modelFromManual == null && fallback != null;
+  // Deliberately body-text-only: a filename fallback here (as this used to
+  // do via `_manufacturer(sourceName)`) can attribute a brand with zero
+  // evidence anywhere in the manual's own text — exactly the defect class
+  // this identity pack exists to kill. If the body has no evidence, the
+  // fixture stays an honest "Unknown manufacturer".
+  final manufacturerMatch = _detectManufacturer(
+    flat,
+    modelFromManual ?? fallback,
+    titleModelHint: modelFromManual,
+  );
+  final manufacturer = manufacturerMatch?.name ?? 'Unknown manufacturer';
+  final manufacturerFromManual = manufacturer;
   final modeCounts = <int>[];
   for (final match in RegExp(
     // The trailing lookahead used to only exclude a following letter, so
@@ -425,6 +439,11 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
         .where((item) => item.kind == 'goboWheel')
         .forEach((item) => item.wheelId = 'gobo-wheel');
   }
+  final identityConfidence = _identityConfidence(
+    manufacturerMatch: manufacturerMatch,
+    modelFromTitle: modelFromManual != null,
+    modelIsFilenameEcho: modelIsFilenameEcho,
+  );
   final fixture = FixtureProject(
     id: '${slug(manufacturer)}-${slug(model)}',
     manufacturer: manufacturer,
@@ -433,6 +452,7 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
     identityFromManual:
         modelFromManual != null &&
         manufacturerFromManual != 'Unknown manufacturer',
+    identityConfidence: identityConfidence,
     channels: channels,
     modes: modes,
     wheels: wheels,
@@ -463,6 +483,14 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
       'We could not find a DMX channel table in this manual.',
     if (manufacturer.startsWith('Unknown')) 'We could not find the maker name.',
     if (model.startsWith('Unknown')) 'We could not find the model name.',
+    // A field that isn't literally "Unknown" can still be a low-confidence
+    // guess (a brand recovered only from weak catalog evidence, a model
+    // that's just the filename echoed back) — surface the same kind of
+    // prompt for those instead of presenting them as settled facts.
+    if (!manufacturer.startsWith('Unknown') &&
+        !model.startsWith('Unknown') &&
+        identityConfidence < .5)
+      "We're not fully confident about the maker or model we found — please check them.",
     if (structuredModes.isNotEmpty)
       ...structuredModes
           .where((mode) => mode.parsedCount < mode.channelCount)
@@ -495,20 +523,499 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
 
 bool _has(String text, String pattern) =>
     RegExp(pattern, caseSensitive: false).hasMatch(text);
-String _manufacturer(String value) {
-  final lower = value.toLowerCase();
-  if (lower.contains('betopper')) return 'Betopper';
-  if (lower.contains('shehds')) return 'SHEHDS';
-  if (lower.contains('chauvet')) {
-    return lower.contains('chauvet professional') ||
-            lower.contains('colorado pxl')
+// ---------------------------------------------------------------------
+// Manufacturer identity: evidence-based matching against the generated
+// brand catalog (brand_catalog.g.dart, from unified.db), plus a small set
+// of brands this extractor already gets right at 94-100% on the GDTF
+// benchmark (see scripts/eval/README.md). Those known brands are checked
+// FIRST, in their original priority order, so they keep winning exactly
+// as before — but through the SAME evidence machinery the catalog scan
+// uses, not a bare `.contains`, because a bare substring check is what
+// caused the defect this pack exists to fix: a Laserworld manual's own
+// legal-imprint line ("CEO: Martin Werner") satisfied `lower.contains
+// ('martin')` and hallucinated manufacturer "Martin" with zero actual
+// brand evidence anywhere in the document.
+//
+// The catalog scan (tier 2) only ever runs when tier 1 finds nothing, and
+// only ever returns a brand that has at least one qualifying occurrence
+// IN THE MANUAL'S OWN BODY TEXT — never from the source filename. A
+// filename-based fallback (this file used to also call `_manufacturer` on
+// `sourceName` when the body scan came up empty) is exactly how a fixture
+// can end up attributed to a brand that appears nowhere in its own
+// manual, so that fallback is gone: no body evidence means an honest
+// "Unknown manufacturer".
+
+/// A brand match found in the document body, with enough evidence detail
+/// for [_identityConfidence] to score it.
+class _IdentityMatch {
+  const _IdentityMatch({
+    required this.name,
+    required this.tier,
+    required this.occurrences,
+    required this.early,
+    required this.coOccursWithModel,
+    this.selfIdentifies = false,
+    this.adjacentToModel = false,
+  });
+  final String name;
+
+  /// 'known' = one of this extractor's own high-precision brands.
+  /// 'catalog' = recovered from the generated brand catalog.
+  final String tier;
+  final int occurrences;
+  final bool early;
+  final bool coOccursWithModel;
+
+  /// True when the manual explicitly names its own maker ("thank you for
+  /// purchasing this `<brand>` product") rather than the brand word merely
+  /// showing up somewhere.
+  final bool selfIdentifies;
+
+  /// True when a brand mention sits immediately next to (within a few
+  /// words of) the detected model text, as in "The Equinox Fusion 200
+  /// Zoom Spot can be operated..." — a much tighter, more reliable signal
+  /// than [coOccursWithModel]'s generous 800-character window. That wider
+  /// window exists for score tie-breaking, where being wrong occasionally
+  /// costs little, but most manuals repeat the model name in a running
+  /// header on every page, which puts nearly every word in the document
+  /// "near" a model mention by that measure — not reliable enough to ever
+  /// let a brand past the minimum-evidence gate on it.
+  final bool adjacentToModel;
+}
+
+/// Honorific/role-title words that, immediately in front of a brand
+/// spelling, mark that occurrence as a person's name rather than the
+/// fixture's manufacturer — the "CEO: Martin Werner" class of false
+/// positive. Checked as the word (or two-word phrase, for "Managing
+/// Director") immediately preceding the match, a trailing colon ignored.
+const _personNameContext = <String>{
+  'mr',
+  'mrs',
+  'ms',
+  'dr',
+  'herr',
+  'mme',
+  'ceo',
+  'cto',
+  'coo',
+  'president',
+  'founder',
+  'owner',
+  'director',
+  'managing director',
+  'geschäftsführer',
+  'verwaltungsrat',
+  // French "Conseil d'administration:" (board of directors) - the ' /
+  // ‘ apostrophe in "d'administration" splits into separate word tokens
+  // under the plain-letter-sequence regex below, so the word actually
+  // seen immediately before the name is "administration", not
+  // "d'administration". Real corpus shape: Laserworld_ScanBar10RGb_UM
+  // and Laserworld_DS1000RGBShowNet_UM both list "Conseil
+  // d'administration: Martin Werner" alongside "CEO:"/"Verwaltungsrat:" -
+  // without this entry those two occurrences alone kept "Martin" above
+  // the empty-evidence bar.
+  'administration',
+};
+
+/// Lowercase, whitespace-collapsed, punctuation-insensitive word sequence
+/// — used to check whether one string's words are contained in another's
+/// (a catalog spelling embedded in a detected model string).
+String _normalizeWords(String value) => RegExp(
+  r'[A-Za-z0-9]+',
+).allMatches(value).map((m) => m.group(0)!.toLowerCase()).join(' ');
+
+/// True when [needleWords] (already space-joined, normalized words) occurs
+/// as a contiguous run of *whole* words inside [haystackWords] — unlike a
+/// raw string `.contains`, this does not treat "robe" as present inside
+/// "probeam" just because the letters line up mid-word.
+bool _wordSequenceContains(String haystackWords, String needleWords) {
+  if (needleWords.isEmpty) return false;
+  final haystack = haystackWords.split(' ');
+  final needle = needleWords.split(' ');
+  if (needle.length > haystack.length) return false;
+  for (var start = 0; start + needle.length <= haystack.length; start++) {
+    var matches = true;
+    for (var i = 0; i < needle.length; i++) {
+      if (haystack[start + i] != needle[i]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return true;
+  }
+  return false;
+}
+
+bool _isPersonNameContext(String flat, int matchStart) {
+  final windowStart = (matchStart - 40).clamp(0, flat.length);
+  final before = flat.substring(windowStart, matchStart);
+  final words = RegExp(
+    r'[A-Za-zÀ-ÖØ-öø-ÿ]+',
+  ).allMatches(before).map((m) => m.group(0)!.toLowerCase()).toList();
+  if (words.isEmpty) return false;
+  if (_personNameContext.contains(words.last)) return true;
+  if (words.length >= 2 &&
+      _personNameContext.contains('${words[words.length - 2]} ${words.last}')) {
+    return true;
+  }
+  return false;
+}
+
+/// Word-boundary, case-insensitive match for [spelling] that also
+/// tolerates a `©`/`®`/`™` glyph glued directly onto the word with no
+/// space (real corpus shapes: "BRITEQ®", "ADJ®", "©Eliminator").
+RegExp _brandPattern(String spelling) => RegExp(
+  r'(?<![A-Za-z0-9])[©®™]?' +
+      RegExp.escape(spelling) +
+      r'[©®™]?(?![A-Za-z0-9])',
+  caseSensitive: false,
+);
+
+/// Every non-person-name-context match offset for any of [spellings] in
+/// [flat] - deduplicated by offset, since [spellings] routinely contains
+/// several case variants of the same word ("Showtec"/"SHOWTEC") that all
+/// match the same real-world mention. Without the dedup, a brand with N
+/// case-variant aliases has every real occurrence counted N times, which
+/// both inflates its score against single-spelling brands and lets it
+/// clear the minimum-evidence gate below on far fewer real mentions than
+/// the gate's number implies.
+List<int> _brandOccurrences(String flat, Iterable<String> spellings) {
+  final offsets = <int>{};
+  for (final spelling in spellings) {
+    for (final match in _brandPattern(spelling).allMatches(flat)) {
+      if (!_isPersonNameContext(flat, match.start)) offsets.add(match.start);
+    }
+  }
+  return offsets.toList()..sort();
+}
+
+/// The character offset up to which a match counts as "early" (roughly
+/// the manual's first two pages) — page markers survive `flat`'s
+/// whitespace-collapsing untouched, so this reads them directly off it.
+int _earlyPageEnd(String flat) {
+  final markers = RegExp(
+    r'=== DMXTRACT PAGE \d+ ===',
+  ).allMatches(flat).toList();
+  return markers.length >= 3 ? markers[2].start : flat.length;
+}
+
+_IdentityMatch? _matchFor(
+  String flat,
+  String name,
+  Iterable<String> spellings,
+  int earlyEnd,
+  String? modelHint,
+) {
+  final offsets = _brandOccurrences(flat, spellings);
+  if (offsets.isEmpty) return null;
+  final early = offsets.any((offset) => offset < earlyEnd);
+  var coOccurs = false;
+  if (modelHint != null && modelHint.length >= 3) {
+    final modelOffsets = <int>[
+      for (final match in RegExp(
+        RegExp.escape(modelHint),
+        caseSensitive: false,
+      ).allMatches(flat))
+        match.start,
+    ];
+    coOccurs = offsets.any(
+      (offset) => modelOffsets.any((m) => (offset - m).abs() < 800),
+    );
+  }
+  return _IdentityMatch(
+    name: name,
+    tier: 'known',
+    occurrences: offsets.length,
+    early: early,
+    coOccursWithModel: coOccurs,
+  );
+}
+
+_IdentityMatch? _detectManufacturer(
+  String flat,
+  String? modelHint, {
+  required String? titleModelHint,
+}) {
+  final earlyEnd = _earlyPageEnd(flat);
+  // Tier 1: known high-precision brands, in their original priority
+  // order (Chauvet's DJ/Professional split is decided the same way it
+  // always was, once we know "Chauvet" itself has real evidence).
+  final betopper = _matchFor(
+    flat,
+    'Betopper',
+    const ['Betopper'],
+    earlyEnd,
+    modelHint,
+  );
+  if (betopper != null) return betopper;
+  final shehds = _matchFor(
+    flat,
+    'SHEHDS',
+    const ['SHEHDS'],
+    earlyEnd,
+    modelHint,
+  );
+  if (shehds != null) return shehds;
+  final chauvet = _matchFor(
+    flat,
+    'Chauvet',
+    const ['Chauvet'],
+    earlyEnd,
+    modelHint,
+  );
+  if (chauvet != null) {
+    final lower = flat.toLowerCase();
+    final name =
+        lower.contains('chauvet professional') || lower.contains('colorado pxl')
         ? 'Chauvet Professional'
         : 'Chauvet DJ';
+    return _IdentityMatch(
+      name: name,
+      tier: 'known',
+      occurrences: chauvet.occurrences,
+      early: chauvet.early,
+      coOccursWithModel: chauvet.coOccursWithModel,
+    );
   }
-  if (lower.contains('martin')) return 'Martin';
-  if (lower.contains('altman')) return 'Altman';
-  if (RegExp(r'(^|[^a-z])adj([^a-z]|$)').hasMatch(lower)) return 'ADJ';
-  return 'Unknown manufacturer';
+  final martin = _matchFor(
+    flat,
+    'Martin',
+    const ['Martin'],
+    earlyEnd,
+    modelHint,
+  );
+  if (martin != null) return martin;
+  final altman = _matchFor(
+    flat,
+    'Altman',
+    const ['Altman'],
+    earlyEnd,
+    modelHint,
+  );
+  if (altman != null) return altman;
+  // "ADJ" is a 3-character acronym, unlike this tier's other (long,
+  // low-collision) brand words - it also reads as the common prose
+  // abbreviation "adj." (adjust/adjustment), including the real corpus
+  // shape of "Adjust" itself getting OCR/column-split across a line
+  // break into a standalone "Adj" token followed by "ust" on the next
+  // line (Elation_PlatinumSpot15RPro_UM: "Adj Calibrate Values" /
+  // "ust ..."), which otherwise hallucinates manufacturer "ADJ" in a
+  // document that never mentions Elation. A single hit is not enough
+  // real-world evidence for a token this collision-prone; require at
+  // least a second occurrence before trusting it outright.
+  final adj = _matchFor(flat, 'ADJ', const ['ADJ'], earlyEnd, modelHint);
+  if (adj != null && adj.occurrences >= 2) return adj;
+
+  // Tier 2: recovery layer over the full generated brand catalog. A cheap
+  // lowercase `contains` prefilters each entry before the precise
+  // word-boundary regex runs, since most of ~1900 entries never appear in
+  // any given manual.
+  //
+  // Ranking is occurrence-count-first: a brand genuinely named throughout
+  // the manual (dozens of times) must always beat an incidental word that
+  // happens to appear a handful of times, or an ordinary-English-word
+  // catalog entry that shows up constantly for unrelated reasons ("head"
+  // as in "moving head", counted a few dozen times across a typical
+  // manual) — capping occurrence evidence at a small number (as an
+  // earlier version of this scan did) let those ties fall to an
+  // alphabetical tiebreak, which is how a manual mentioning "Robe" 30+
+  // times once lost to "Prg" (an abbreviation for "test program",
+  // mentioned 8 times) purely because both got clamped to the same score.
+  // Early-page and model-co-occurrence remain small nudges for near-ties,
+  // never enough to overturn a real occurrence-count gap.
+  final flatLower = flat.toLowerCase();
+  // Only an in-document TITLE match guards against self-reference — the
+  // filename fallback routinely embeds the manufacturer's own name as a
+  // filename-naming convention ("Laserworld_ScanBar10RGb_UM.pdf"), so
+  // using it here would wrongly exclude the real brand as if it were
+  // just its own product name repeating.
+  final normalizedTitleModelHint = titleModelHint == null
+      ? null
+      : _normalizeWords(titleModelHint);
+  _IdentityMatch? best;
+  double bestScore = -1;
+  for (final entry in brandCatalog) {
+    final spellings = entry.spellings.toList();
+    final mightMatch = spellings.any(
+      (spelling) => flatLower.contains(spelling.toLowerCase()),
+    );
+    if (!mightMatch) continue;
+    final offsets = _brandOccurrences(flat, spellings);
+    if (offsets.isEmpty) continue;
+    // A catalog word embedded in the fixture's own model name/number
+    // ("Fusion" inside model "Fusion 200 Zoom Spot") is that product name
+    // repeating, not a separate brand mention. Only treat it as
+    // self-reference when the *only* mention found anywhere in the body
+    // is the one inside the title/model text — a brand that repeats
+    // elsewhere in the body is real, independent evidence and must stay
+    // a candidate (real corpus shape: a cover page reading "ROBE Robin
+    // Spikie" must not disable "Robe" when the body names it a dozen
+    // more times). This also compares whole words, not raw substrings —
+    // normalized "probeam" containing the letters of "robe" is not the
+    // same *word* as "robe" and must not exclude an unrelated brand.
+    if (normalizedTitleModelHint != null &&
+        offsets.length <= 1 &&
+        spellings.any(
+          (spelling) => _wordSequenceContains(
+            normalizedTitleModelHint,
+            _normalizeWords(spelling),
+          ),
+        )) {
+      continue;
+    }
+    final early = offsets.any((offset) => offset < earlyEnd);
+    var coOccurs = false;
+    var adjacentToModel = false;
+    if (modelHint != null && modelHint.length >= 3) {
+      final modelOffsets = <int>[
+        for (final match in RegExp(
+          RegExp.escape(modelHint),
+          caseSensitive: false,
+        ).allMatches(flat))
+          match.start,
+      ];
+      coOccurs = offsets.any(
+        (offset) => modelOffsets.any((m) => (offset - m).abs() < 800),
+      );
+      // Most manuals repeat the model name in a running header on every
+      // page, so "within 800 characters of *some* model mention" is true
+      // for nearly every word in the document once a manual is a few
+      // pages long - not reliable evidence of anything. Real corpus
+      // shapes: "MKII" (Stairville_LEDMatrixBlinder5x5MKII_UM) and "Gobo
+      // Flower" (Equinox_HelixXPFlower_UM) each repeat as a page header
+      // 20-40+ times, which put the ordinary prose words "play" ("...let
+      // children play with the packaging...") and "universal" ("a
+      // universal DMX controller") within the loose window purely by
+      // page-header density, not because either word means anything
+      // brand-related. A genuine "<Brand> <Model>" mention - the shape
+      // this signal exists to catch (Equinox_Fusion200ZoomSpot_UM: "The
+      // Equinox Fusion 200 Zoom Spot can be operated...") - has the brand
+      // word directly beside the model text, not merely on the same
+      // page.
+      adjacentToModel = offsets.any(
+        (offset) => modelOffsets.any((m) => (offset - m).abs() <= 20),
+      );
+    }
+    // "Thank you for purchasing this <brand> product" (and near variants)
+    // is the strongest, most brand-agnostic signal a manual gives of its
+    // own maker — real corpus shape, seen verbatim across Laserworld,
+    // Showtec and Briteq manuals in this benchmark. Weighted heavily
+    // enough to beat a higher-occurrence but incidental mention (e.g. a
+    // parent/holding company named repeatedly in a legal footer).
+    final selfIdentifies = spellings.any(
+      (spelling) => RegExp(
+        r'(?:purchasing|buying) this\s+' +
+            RegExp.escape(spelling) +
+            r'\b|\bthis\s+' +
+            RegExp.escape(spelling) +
+            r'\s+product\b',
+        caseSensitive: false,
+      ).hasMatch(flat),
+    );
+    // A handful of catalog entries are real, current manufacturers
+    // (ETC/Electronic Theatre Controls, WORK/WORK Pro, Highlite's
+    // Infinity line) that are *also* common English words/abbreviations
+    // far too frequent in ordinary manual prose to trust from raw
+    // occurrence count the way the rest of the catalog is - unlike the
+    // entries the generator denylists outright (see
+    // scripts/update_brand_catalog.py), these are established enough
+    // brands that deleting them entirely would make them permanently
+    // unattributable even when a manual plainly does self-identify.
+    // Require the same explicit self-identification signal used above
+    // instead of occurrence count for these specifically.
+    if (entry.requiresStrongSignal && !selfIdentifies) continue;
+    final score =
+        offsets.length +
+        (early ? 1 : 0) +
+        (coOccurs ? 1 : 0) +
+        (selfIdentifies ? 20 : 0);
+    if (score > bestScore ||
+        (score == bestScore &&
+            (best == null || entry.canonical.compareTo(best.name) < 0))) {
+      bestScore = score.toDouble();
+      best = _IdentityMatch(
+        name: entry.canonical,
+        tier: 'catalog',
+        occurrences: offsets.length,
+        early: early,
+        coOccursWithModel: coOccurs,
+        selfIdentifies: selfIdentifies,
+        adjacentToModel: adjacentToModel,
+      );
+    }
+  }
+  // Minimum-evidence gate: a catalog scan over ~1800 names always finds
+  // *some* match in a long enough document, and plenty of catalog entries
+  // are themselves ordinary English words ("Play", "Strong") or product
+  // words a MagicQ/GDTF source happens to also list as a "manufacturer"
+  // ("Fusion", "Helix" — see the entries this file's generator denylists).
+  // Picking whichever such word occurs most often, when the manual simply
+  // never names its actual maker anywhere (a real corpus shape: several
+  // rebranded/white-label manuals in this benchmark's corpus never
+  // mention their own brand at all), produces a confidently WRONG brand
+  // instead of an honest "Unknown manufacturer" — worse than not
+  // guessing. Require either an explicit self-identification ("thank you
+  // for purchasing this <brand> product") or a real, repeated, early
+  // presence before ever trusting a tier-2 catalog match.
+  //
+  // A brand mentioned right next to the fixture's own detected model name
+  // ("The Equinox Fusion 200 Zoom Spot can be operated...") is a much
+  // stronger signal per mention than an incidental repeat elsewhere in
+  // the manual, so it clears the bar at a lower count — but still not on
+  // a single mention alone (real corpus shape: Equinox_Fusion200ZoomSpot_
+  // UM names "Equinox" exactly twice, both directly beside the model
+  // name; that is real, load-bearing evidence a flat >=6 count was
+  // throwing away). This deliberately checks the tight [adjacentToModel]
+  // signal, not the generous 800-character [coOccursWithModel] used for
+  // score nudging above — that wider window is satisfied by an ordinary
+  // prose word purely from page-header density (see adjacentToModel's own
+  // doc comment) and must never be allowed to override this gate.
+  final modelCoOccurrenceRescue =
+      best != null && best.adjacentToModel && best.occurrences >= 2;
+  if (best != null &&
+      !best.selfIdentifies &&
+      !modelCoOccurrenceRescue &&
+      best.occurrences < 6) {
+    return null;
+  }
+  return best;
+}
+
+/// Evidence-based replacement for the old flat 0.92 identity confidence
+/// constant. Scores the manufacturer match and the model source
+/// separately, then combines them — capping hard for the two known
+/// low-trust shapes this pack targets: a model that's just the source
+/// filename echoed back, and a manufacturer found only through weak
+/// catalog evidence (or not found at all).
+double _identityConfidence({
+  required _IdentityMatch? manufacturerMatch,
+  required bool modelFromTitle,
+  required bool modelIsFilenameEcho,
+}) {
+  double manufacturerConfidence;
+  if (manufacturerMatch == null) {
+    manufacturerConfidence = .15;
+  } else if (manufacturerMatch.tier == 'known') {
+    // These brands are independently verified at 94-100% on the GDTF
+    // benchmark (scripts/eval) — keep the same high trust they always had.
+    manufacturerConfidence = .95;
+  } else {
+    manufacturerConfidence =
+        (.5 +
+                .1 * manufacturerMatch.occurrences.clamp(0, 3) +
+                (manufacturerMatch.early ? .1 : 0) +
+                (manufacturerMatch.coOccursWithModel ? .15 : 0))
+            .clamp(0, .85);
+  }
+  final modelConfidence = modelFromTitle
+      ? .9
+      : modelIsFilenameEcho
+      ? .35
+      : .15;
+  var overall = (manufacturerConfidence + modelConfidence) / 2;
+  if (modelIsFilenameEcho) overall = overall.clamp(0, .45);
+  if (manufacturerMatch == null) overall = overall.clamp(0, .35);
+  return overall.clamp(.05, .97);
 }
 
 // Common filler words that can land directly in front of a doc-type suffix

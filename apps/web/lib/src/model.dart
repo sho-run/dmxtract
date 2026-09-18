@@ -171,6 +171,7 @@ class FixtureProject {
     required this.modes,
     this.sourceName = '',
     this.identityFromManual = false,
+    this.identityConfidence = .92,
     this.wheels = const [],
     this.physical = const {},
   });
@@ -179,6 +180,13 @@ class FixtureProject {
   String model;
   String sourceName;
   bool identityFromManual;
+
+  /// How much evidence backs [manufacturer]/[model]: 1.0 is an
+  /// in-document title match on a brand extraction_rules.dart already
+  /// trusts; well under .5 means a filename echo or a brand with only
+  /// weak catalog evidence. See extraction_rules.dart's identity-pack
+  /// scoring — this replaces what used to be a flat, always-.92 constant.
+  double identityConfidence;
   List<DmxChannel> channels;
   List<FixtureMode> modes;
   List<Map<String, Object?>> wheels;
@@ -197,7 +205,12 @@ class FixtureProject {
       'model': model,
       'shortName': model,
       'categories': <String>[],
-      'confidence': {'score': .92, 'reason': ''},
+      'confidence': {
+        'score': identityConfidence,
+        'reason': identityConfidence < .5
+            ? 'Please check the maker and model we found'
+            : '',
+      },
     },
     'physical': physical,
     'provenance': {
@@ -229,6 +242,9 @@ class FixtureProject {
       sourceName: (json['provenance'] as Map?)?['sourceName'] as String? ?? '',
       identityFromManual:
           (json['provenance'] as Map?)?['identityFromManual'] as bool? ?? false,
+      identityConfidence:
+          ((identity['confidence'] as Map?)?['score'] as num? ?? .92)
+              .toDouble(),
       channels: (json['channels'] as List)
           .map(
             (item) =>

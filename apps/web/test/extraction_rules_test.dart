@@ -9,7 +9,12 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   test('finds multiple fixture modes in common manual layouts', () {
     final adj = fixtureFromManualText(
-      'ADJ VIZI XTREME DMX TRAITS 28Ch 40Ch 73Ch 54Ch 63Ch CHANNEL DMX VALUES FUNCTION Pan Tilt Dimmer Color Wheel Gobo Wheel',
+      // Two "ADJ" mentions: real ADJ-branded manuals print the brand a
+      // dozen-plus times minimum (see the identity pack's minimum-evidence
+      // gate in extraction_rules.dart, and apps/web/test/
+      // identity_matching_test.dart), so a single occurrence alone is not
+      // trusted.
+      'ADJ VIZI XTREME DMX TRAITS 28Ch 40Ch 73Ch 54Ch 63Ch CHANNEL DMX VALUES FUNCTION Pan Tilt Dimmer Color Wheel Gobo Wheel. ADJ reserves the right to change specifications without notice.',
       'ADJ_VIZI_XTREME_DMX_TRAITS.pdf',
     );
     expect(adj.fixture.manufacturer, 'ADJ');
@@ -93,7 +98,11 @@ DMX Chart
       'PHX_LVD_USER_MANUAL.pdf',
     );
     expect(phx.fixture.channels, isEmpty);
-    expect(phx.questions.single, contains('mains-dimmed'));
+    // The model here falls through to a filename echo ("PHX LVD USER
+    // MANUAL" has no in-document title match), which now also surfaces a
+    // low-confidence prompt alongside the mains-dimmed one - both are
+    // legitimate, so this checks membership rather than exact count.
+    expect(phx.questions, contains(contains('mains-dimmed')));
   });
 
   test('canonical project round trips', () {
@@ -410,7 +419,11 @@ CH6 Channel Table
       255,
       255,
     ]);
-    expect(result.questions.single, contains('we read 3 of 6'));
+    // "GRID6" has only one trailing digit, so the in-document model
+    // pattern doesn't match it and the model falls through to the
+    // filename echo ("grid6.pdf") - that now also surfaces a
+    // low-confidence prompt alongside the incomplete-table one.
+    expect(result.questions, contains(contains('we read 3 of 6')));
   });
 
   test('recovers ordered channel functions when narrow OCR columns fail', () {
@@ -1488,7 +1501,8 @@ DMX Channel Table
     final result = fixtureFromManualText('''ADJ VIZI XTREME - DMX TRAITS
 CHANNEL DMX FUNCTION
 28Ch 40Ch VALUES
-1 1 000-255 Pan Movement''', '15a2a6ff145475d6dd14364285982a4a87a4129d.pdf');
+1 1 000-255 Pan Movement
+ADJ reserves the right to change specifications without notice.''', '15a2a6ff145475d6dd14364285982a4a87a4129d.pdf');
     expect(result.fixture.manufacturer, 'ADJ');
     expect(result.fixture.model, 'VIZI XTREME');
   });
