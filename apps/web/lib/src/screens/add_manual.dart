@@ -5,6 +5,7 @@ import 'package:qr/qr.dart';
 import '../app_state.dart';
 import '../components.dart';
 import '../deployment_theme.dart';
+import '../diagnostic_report_affordance.dart';
 import '../phone_link.dart';
 import '../theme.dart';
 
@@ -163,49 +164,56 @@ class AddManualScreen extends StatelessWidget {
             child: Card(
               child: Padding(
                 padding: const EdgeInsets.all(20),
-                child: Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            state.status,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w800,
-                              fontSize: 18,
-                            ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                state.status,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 18,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              const Text(
+                                'If this fixture does use DMX, take a close screenshot of its channel table and choose it here.',
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 4),
-                          const Text(
-                            'If this fixture does use DMX, take a close screenshot of its channel table and choose it here.',
-                          ),
-                        ],
-                      ),
+                        ),
+                        const SizedBox(width: 18),
+                        OutlinedButton.icon(
+                          onPressed: () async {
+                            if (state.thumbnails.isEmpty) {
+                              await state.pickManual();
+                              return;
+                            }
+                            final selection = await _selectTableRegion(
+                              context,
+                              state.thumbnails,
+                            );
+                            if (selection == null) return;
+                            await state.readSelectedRegion(
+                              selection.page,
+                              selection.rect.left,
+                              selection.rect.top,
+                              selection.rect.width,
+                              selection.rect.height,
+                            );
+                          },
+                          icon: const Icon(Icons.crop_outlined),
+                          label: const Text('Draw a box around it'),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 18),
-                    OutlinedButton.icon(
-                      onPressed: () async {
-                        if (state.thumbnails.isEmpty) {
-                          await state.pickManual();
-                          return;
-                        }
-                        final selection = await _selectTableRegion(
-                          context,
-                          state.thumbnails,
-                        );
-                        if (selection == null) return;
-                        await state.readSelectedRegion(
-                          selection.page,
-                          selection.rect.left,
-                          selection.rect.top,
-                          selection.rect.width,
-                          selection.rect.height,
-                        );
-                      },
-                      icon: const Icon(Icons.crop_outlined),
-                      label: const Text('Draw a box around it'),
-                    ),
+                    if (state.fixture != null)
+                      DiagnosticReportAffordance(state: state),
                   ],
                 ),
               ),

@@ -94,6 +94,38 @@ through "Add several photos" (`DmxtractState.addPhotos`), so they get the
 same deduplication, manual-text extraction, and autosave behavior as any
 other photo, regardless of how they arrived.
 
+## Diagnostic-report download
+
+The Check step and the "we could not find a DMX channel table" card both
+offer a low-key "Not what the manual says? Download what we read" link. It
+builds a `<manufacturer>-<model>.dmxtract-report.json` file entirely
+client-side (`lib/src/diagnostic_report.dart`) and hands it to the browser's
+own `Blob`/`createObjectURL` download, the same mechanism the OFL/GDTF/project
+downloads on the Download step already use — nothing is uploaded or
+transmitted by triggering the download itself.
+
+The file contains only what the local parser already produced from the
+manual:
+
+- the page-marked text it read (the same `=== DMXTRACT PAGE N ===`-delimited
+  text handed to the extraction rules — OCR/PDF text, not an image),
+- the canonical fixture JSON built from that text (manufacturer, model,
+  channels, modes, confidence scores — the same shape as a `.dmxtract.json`
+  project export),
+- the source file's name, and
+- this bundle's own schema/version identifiers, for anyone triaging reports.
+
+It never contains the original manual PDF or photo bytes, browser storage,
+bridge tokens, or anything that did not already pass through the local
+extraction pipeline.
+
+Downloading the file does not send it anywhere. Sending it at all is a
+separate, manual act: the affordance also links to the deployment's existing
+bug-report destination (`DMXTRACT_BUG_REPORT_URL` — a mailto address on a
+configured deployment, or the public GitHub issue tracker by default) and
+asks the person to attach the file themselves if they choose to report a
+problem. No new network path was added for this feature.
+
 ## Offline behavior
 
 DMXtract has no offline-caching layer today, and — as of the Flutter version
