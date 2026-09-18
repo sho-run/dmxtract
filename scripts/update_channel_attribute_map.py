@@ -21,7 +21,7 @@ What it does
    GROUP BY 1, 2, 3` from unified.db (merged from several fixture-library
    sources on GDTF's model - see
    ~/.claude/projects/.../unified-fixture-db.md). `source` is
-   'gdtf' | 'ssl2' | 'magicq'; falls back to an unweighted, source-less
+   'gdtf' or a console-library source; falls back to an unweighted, source-less
    query against a database that has no `mode`/`fixture` tables (the
    minimal sample schema channel_attribute_map_test.dart's determinism
    test builds).
@@ -51,11 +51,11 @@ What it does
    unambiguous evidence:
      - If GDTF alone backs the key with at least GDTF_MIN_EVIDENCE
        occurrences, the winning template is decided from GDTF's own
-       votes alone, ignoring MagicQ/SSL2 entirely for that decision.
+       votes alone, ignoring the console-library sources entirely for that decision.
        GDTF is ~18% of unified.db's channel rows, so pooling all three
-       sources unweighted lets a MagicQ/SSL2 dialect outvote GDTF on a
+       sources unweighted lets a the console-library sources dialect outvote GDTF on a
        key GDTF disagrees with (confirmed on real data: pooled votes
-       send 'cct' to CTO on 10023 MagicQ + 905 SSL2 rows and zero GDTF
+       send 'cct' to CTO on over ten thousand console-library rows and zero GDTF
        weight, while GDTF's own 698 rows for that key say CCT) - and
        scripts/eval/score_extraction.py's ground truth is itself
        GDTF-only, so a template GDTF-only evidence would have rejected
@@ -65,7 +65,7 @@ What it does
        MIN_TOTAL_NO_GDTF - a thin, single-dialect entry with no GDTF
        backing at all is exactly the shape of a wrong or misleading
        mapping (confirmed on real data: 'sound sensitivity' -> a mic-
-       gain control - mapping to Effects{n} on 89 SSL2-only rows).
+       gain control - mapping to Effects{n} on 89 console-library-only rows).
    Either way, the winning template must still clear MIN_RATIO of
    whichever evidence pool decided it - this is a *majority* mapping,
    not a unanimous one, since a real corpus mixes typos, alternate
@@ -79,7 +79,7 @@ What it does
    the catalog's own "(n)"/"(m)" placeholders treated as wildcards) -
    the generator has no way to know a mined attribute spelling is real
    GDTF taxonomy rather than a source library's own free-text label
-   ("Macro" from a MagicQ 'beam macro' pretty string, say - GDTF has no
+   ("Macro" from a console-library 'beam macro' pretty string, say - GDTF has no
    bare "Macro" attribute, only "ColorMacro(n)" and friends) until it's
    checked against the catalog that IS the definition of real GDTF
    taxonomy.
@@ -173,7 +173,7 @@ def templatize(attribute: str) -> str:
 def load_rows(db_path: str) -> list[tuple[str, str, str | None, int]]:
     """Returns (pretty, attribute, source, count) rows.
 
-    `source` is 'gdtf' | 'ssl2' | 'magicq', joined in via
+    `source` is 'gdtf' or a console-library source, joined in via
     channel.mode_id -> mode.fixture_id -> fixture.source. Falls back to a
     source-less query (source always None) against a database that has
     no `mode`/`fixture` tables at all, which is what
@@ -238,7 +238,7 @@ def build_map(
     # counts[key][source_or_'?'][template] -> occurrences. Grouping by
     # source (rather than a single pooled total) is what lets GDTF's own
     # votes be judged on their own, separately from the much larger
-    # MagicQ/SSL2 pool - see step 4.
+    # the console-library sources pool - see step 4.
     counts: dict[str, dict[str, dict[str, int]]] = {}
     # Whether `rows` carries real source labels at all. [load_rows] falls
     # back to a source-less query (every row's source is None) against a
