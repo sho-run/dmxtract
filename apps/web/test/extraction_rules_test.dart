@@ -2889,6 +2889,40 @@ CHANNEL      CH: 06, 07, 08, 12                       DMX Channel Mode
     ]);
   });
 
+  test('names the model the way the text layer spells it when OCR misread '
+      'an image-only cover (ADJ Encore LP12Z IP)', () {
+    // OCR read the cover's artwork as "AwAs", right above "User Manual", and
+    // its title as "ENCORE LPIeZ IP"; page 4 thanks the reader for the
+    // "Encore LP12Z IP".
+    final fixture = fixtureFromManualText(
+      _encoreLp12zCoverExcerpt,
+      'Encore LP12Z IP.pdf',
+    ).fixture;
+    expect(fixture.model, 'Encore LP12Z IP');
+    expect(fixture.manufacturer, 'ADJ');
+  });
+
+  test('respells an OCR-misread cover title from the text layer, and keeps '
+      'one the text layer only spaces differently', () {
+    // "HYDRO SPOT |" on the image cover; "The Hydro Spot 1 carries..." inside.
+    expect(
+      fixtureFromManualText(
+        _hydroSpot1CoverExcerpt,
+        'Hydro Spot 1.pdf',
+      ).fixture.model,
+      'Hydro Spot 1',
+    );
+    // "FUZE WASH Z350" on the cover is "FUZEWASH Z350" inside: the same
+    // letters, so the cover's spelling stands.
+    expect(
+      fixtureFromManualText(
+        _fuzeWashZ350CoverExcerpt,
+        'Fuze Wash Z350.pdf',
+      ).fixture.model,
+      'FUZE WASH Z350',
+    );
+  });
+
   test('folds extraction-only channel kinds onto the fixture schema', () {
     // The Rust core rejects a kind outside schemas/fixture-v1.json's
     // ChannelKind enum as invalid JSON, which used to fail validation and
@@ -5126,4 +5160,125 @@ Speed / Sound sensitivity , Speed adjustment (when sound
 3   –   13   38   000-255
 control is off) / Sound control sensitivity (when sound control is on)
 20
+''';
+
+/// The ADJ Encore LP12Z IP manual's cover (page 1, an image read by OCR) and
+/// page 4, verbatim from this app's text pass.
+const _encoreLp12zCoverExcerpt = r'''
+=== DMXTRACT PAGE 1 ===
+s>~
+ADS
+VY
+ENCORE LPIeZ IP
+Kath ys
+AwAs
+User Manual
+
+
+=== DMXTRACT PAGE 4 ===
+I N T R O D U C T I O N
+Unpacking: Thank you for purchasing the Encore LP12Z IP by ADJ Products, LLC. Every device has
+been thoroughly tested and has been shipped in perfect operating condition. Carefully check the ship -
+ping carton for damage that may have occurred during shipping. If the carton appears to have been
+damaged, carefully inspect your fixture for any damage and be sure all accessories necessary to oper -
+ate the unit have arrived intact. In the event that damage has been found or parts are missing, please
+contact our toll free customer support number for further instructions. Do not return this unit to your
+dealer without first contacting customer support.
+Introduction: The ADJ Encore LP12Z IP is an IP65-rated wash fixture with motorized zoom, wireless
+DMX and a variety of useful professional control tools for staging and event application. Its twelve 20W
+Quad RGBL (Red, Green, Blue and Lime) LEDs allow for a wide array of colors to be produced, tunable
+white color control from 2700K to 6500K and an attractive CRI output. This product is intended to be
+used by professionally trained personnel only and is not suitable for private use.
+Customer Support: Contact ADJ Service for any product related service and support needs. Also visit
+forums.adj.com with questions, comments or suggestions.
+Parts: To purchase parts online visit:
+http://parts.adj.com (US)
+http://www.adjparts.eu (EU)
+ADJ SERVICE USA - Monday - Friday 8:00am to 4:30pm PST
+Voice: 800-322-6337 | Fax: 323-582-2941 | support@adj.com
+ADJ SERVICE EUROPE - Monday - Friday 08:30 to 17:00 CET
+Voice: +31 45 546 85 60 | Fax: +31 45 546 85 96 | support@adj.eu
+ADJ PRODUCTS LLC USA
+6122 S. Eastern Ave. Los Angeles, CA. 90040
+323-582-2650 | Fax 323-532-2941 | www.adj.com | info@adj. com
+ADJ SUPPLY Europe B.V
+Junostraat 2 6468 EW Kerkrade, The Netherlands
++31 (0)45 546 85 00 | Fax +31 45 546 85 99
+www.americandj.eu | info@americandj.eu
+ADJ PRODUCTS GROUP Mexico
+AV Santa Ana 30 Parque Industrial Lerma, Lerma, Mexico 52000
++52 (728) 282-7070
+CAUTION ! There are no user serviceable parts inside this unit. Do not attempt any repairs yourself,
+as doing so will void your manufacturer’s warranty. In the unlikely event your unit may require service,
+please contact ADJ Products, LLC.
+Do not discard the shipping cartoon in the trash. Please recycle when ever possible.
+4
+''';
+
+/// The ADJ Hydro Spot 1 manual's cover (page 1, an image read by OCR) and
+/// page 6, verbatim from this app's text pass.
+const _hydroSpot1CoverExcerpt = r'''
+=== DMXTRACT PAGE 1 ===
+S—~.
+ADS
+ar
+HYDRO SPOT |
+User Manual
+
+
+=== DMXTRACT PAGE 6 ===
+WA R R A N T Y R E G I S T R AT I O N
+The Hydro Spot 1 carries a 2 year limited warranty. Please fill out the enclosed warranty card to
+validate your purchase. All returned service items, whether under warranty or not, must be freight
+pre-paid and accompanied by a return authorization (R.A.) number. The R.A. number must be clearly
+written on the outside of the return package. A brief description of the problem as well as the R.A.
+number must also be written down on a piece of paper included in the shipping carton. If the unit is
+under warranty, you must provide a copy of your proof of purchase invoice. You may obtain an R.A.
+number by contacting our customer support team on our customer support number. All packages
+returned to the service department not displaying an R.A. number on the outside of the package will
+be returned to the shipper.
+F E AT U R E S
+• Motorized Focus
+• Motorized Zoom: 12° ~ 23°
+• 2 Frost Filters (Heavy and Medium)
+• 2 Prism FX: Rotating 5-facet Linear & rotating 6-facet Circular
+• 0-100% smooth dimming
+• Various strobe speeds
+• 2 cooling fans
+INCLUDED ITEMS
+• Omega Bracket (x1)
+• Locking Power Cable (x1)
+IP RATING
+An IP rated lighting fixture is commonly installed in outdoor environments and has been designed with
+an enclosure that effectively protects the ingress (entry) of external foreign objects such as dust and
+water. The Ingress Protection (IP) rating system is commonly expressed as “IP” followed by two num -
+bers (i.e. IP65), where the numbers define the degree of protection. The first digit (Foreign Bodies
+Protection) indicates the extent of protection against particles entering the fixture and the second digit
+(Water Protection) indicates the extent of protection against water entering the fixture. An IP65 rated
+lighting fixture, such as this one, has been designed and tested to protect against the ingress
+of dust (6) and low-pressure water jets from any direction (5). INTENDED FOR TEMPORARY
+OUTDOOR USE ONLY!
+6
+''';
+
+/// The Elation Fuze Wash Z350 manual's cover (page 1) and page 10,
+/// verbatim from this app's text pass.
+const _fuzeWashZ350CoverExcerpt = r'''
+=== DMXTRACT PAGE 1 ===
+FT ATION
+FUZE WASH Z350
+User Manual
+
+
+=== DMXTRACT PAGE 10 ===
+OVERVIEW
+Ecatio®, @®
+FUZEWASH Z350 COMOMC)
+www.elationlighting.com err ENTER RIGHT
+en ®
+A a
+lj] | (Q2SQQ@O 0}
+— Se) o ‘MXN ‘OM IN ‘bMx our ‘omex our —
+|_lo \ = Cex |_|
+10
 ''';
