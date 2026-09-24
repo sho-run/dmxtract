@@ -11,12 +11,14 @@
 
 ## Optional fixture-library lookup
 
-The optional lookup sends only the extracted manufacturer, model, and distinct
-mode footprints to the same-origin `/api/fixture-matches` endpoint. It never
-sends the manual, manual filename, extracted channel table, autosaved project,
-browser identifiers, bridge token, DMX network details, or hardware identity.
-Lookup runs only when both manufacturer and model were detected in manual text;
-identity inferred solely from a filename is never submitted.
+The optional lookup sends the manufacturer, model, and distinct mode
+footprints to the same-origin `/api/fixture-matches` endpoint — the extracted
+values, or, if the person corrects either on the Check step afterward, the
+corrected one. It never sends the manual, manual filename, extracted channel
+table, autosaved project, browser identifiers, bridge token, DMX network
+details, or hardware identity. Lookup runs only when both manufacturer and
+model were detected in manual text; identity inferred solely from a filename
+is never submitted.
 
 The Netlify function is a fixed integration, not an open proxy. A configured
 provider URL and bearer token, or GDTF Share username, password, and session
@@ -178,8 +180,9 @@ code change needed here:
 
 - Optional fixture-library lookup (`GdtfLookupClient.search`): a 12 s timeout
   wraps the whole request in `try`/`catch`; any failure (offline, DNS,
-  non-200, wrong content type) returns a disabled, empty result, silently
-  skipping the "matches found" panel.
+  non-200, wrong content type) returns a disabled, empty result. The Check
+  step's status row shows "GDTF Share not checked" for this, rather than
+  the wording it uses for a checked, no-match result.
 - Phone photo hand-off availability (`DmxtractState._checkPhoneLinkAvailability`):
   a 6 s timeout and `try`/`catch` around the same-origin
   `/api/phone-link-signal` probe leaves the QR affordance hidden on any
