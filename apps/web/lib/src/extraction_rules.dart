@@ -96,11 +96,15 @@ ExtractionResult fixtureFromManualText(String text, String sourceName) {
       _modelFromManualTitle(manualTitleMatch?.group(1)) ??
       _modelFromManualTitle(manualTitleTwoLineMatch?.group(1)) ??
       _modelFromLetterTrackedTraitsLine(text);
+  // A product line or a "Model:" line states the model; a title is checked
+  // against the pages after the cover, which OCR may have misread.
   final modelFromManual =
       productLineModelMatch?.group(1)?.trim() ??
       numberedModelMatch?.group(1)?.replaceAll(' ', '') ??
-      titleModel ??
-      _firstNonStopwordTitle(titledModelMatch);
+      _corroboratedModel(
+        text,
+        titleModel ?? _firstNonStopwordTitle(titledModelMatch),
+      );
   final fallback = _modelFromFilename(sourceName);
   final model = modelFromManual ?? fallback ?? 'Unknown fixture';
   // A model recovered only from the filename (no in-document title match)
@@ -1188,6 +1192,152 @@ String? _modelFromManualTitle(String? raw) {
     return null;
   }
   return value;
+}
+
+/// The model name a manual's title gives, as the pages after the cover
+/// spell it. A cover page that is only an image reaches the parser as OCR,
+/// which misreads a styled title ("ENCORE LPIeZ IP", "HYDRO SPOT |", "FUZE
+/// WASH SOO") or reads the artwork as a word ("AwAs"), while the pages
+/// inside usually name the product correctly ("Thank you for purchasing the
+/// Encore LP12Z IP").
+///
+/// Both sides are folded before they are compared: lower-cased, with i, l,
+/// | and ! read as 1, o as 0, s as 5, z as 2 and b as 8, and everything but
+/// letters and digits dropped. A [pick] that matches a run of whole words
+/// after the cover keeps its own spelling when the two differ only in case,
+/// spacing and punctuation, and otherwise takes the spelling of the first
+/// such run without a | or ! in it ("HYDRO SPOT |" becomes "Hydro Spot 1").
+/// A pick found nowhere after the cover gives way to the closest match
+/// between a line before the second page and a run of about as many words
+/// after the cover: more than 80% alike by edit distance, holding a digit
+/// that isn't a unit ("150W", "IP65"), holding no DMX value range, and
+/// passing the same title checks as any other model. A name with no number
+/// of its own is never taken this way, and can take in a neighbouring one
+/// ("IP Pixel Controller 1" from "1. Introduction"). Page markers and photo
+/// headers are no words.
+String? _corroboratedModel(String text, String? pick) {
+  final markers = RegExp(
+    r'^=== DMXTRACT PAGE \d+ ===[ \t]*$',
+    multiLine: true,
+  ).allMatches(text).toList();
+  if (pick == null || markers.length < 2) return pick;
+  bool isMarker(String line) => line.trimLeft().startsWith('===');
+  String fold(String value) => value
+      .toLowerCase()
+      .replaceAll(RegExp(r'[il|!]'), '1')
+      .replaceAll('o', '0')
+      .replaceAll('s', '5')
+      .replaceAll('z', '2')
+      .replaceAll('b', '8')
+      .replaceAll(RegExp(r'[^a-z0-9]'), '');
+  final words = <String>[];
+  final folded = <String>[];
+  for (final line in text.substring(markers[1].start).split('\n')) {
+    if (isMarker(line)) continue;
+    for (final word in line.split(RegExp(r'\s+'))) {
+      final key = fold(word);
+      if (key.isEmpty) continue;
+      words.add(word);
+      folded.add(key);
+    }
+  }
+  String trimmed(String value) =>
+      value.replaceAll(RegExp(r'^[^A-Za-z0-9]+|[^A-Za-z0-9]+$'), '');
+  String letters(String value) =>
+      value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+  final target = fold(pick);
+  var found = false;
+  for (var i = 0; i < folded.length && target.isNotEmpty; i++) {
+    if (!target.startsWith(folded[i])) continue;
+    var joined = '';
+    for (var j = i; j < folded.length; j++) {
+      joined += folded[j];
+      if (!target.startsWith(joined)) break;
+      if (joined.length < target.length) continue;
+      found = true;
+      // A | or ! in the run stood in for a 1, I or l, even at either end,
+      // where trimming the spelling would drop it ("HYDRO SPOT |").
+      final run = words.sublist(i, j + 1).join(' ');
+      final spelled = trimmed(run);
+      if (letters(spelled) == letters(pick)) return pick;
+      if (!RegExp('[|!]').hasMatch(run)) {
+        return _modelFromManualTitle(spelled) ?? pick;
+      }
+      break;
+    }
+  }
+  if (found) return pick;
+  final at = <String, List<int>>{};
+  for (var i = 0; i < folded.length; i++) {
+    if (folded[i].length >= 2) at.putIfAbsent(folded[i], () => []).add(i);
+  }
+  // A model number is a digit that isn't a unit ("150W", "IP65") in a name
+  // that holds no DMX value range ("000-020 No Function" on a table page).
+  final unit = RegExp(
+    r'^(?:IP\d{2}|\d+(?:[.,]\d+)?(?:W|V|VAC|Hz|mm|cm|kg|lbs?|°|K|%))$',
+    caseSensitive: false,
+  );
+  bool modelLike(String name) =>
+      !RegExp(r'\d{1,3}[ \t]*[-–—~][ \t]*\d{1,3}').hasMatch(name) &&
+      name
+          .split(RegExp(r'\s+'))
+          .any(
+            (token) => RegExp(r'\d').hasMatch(token) && !unit.hasMatch(token),
+          );
+  String? best;
+  var bestScore = .8;
+  for (final raw in text.substring(0, markers[1].start).split('\n')) {
+    if (isMarker(raw)) continue;
+    final line = trimmed(raw.trim());
+    final tokens = line.split(RegExp(r'\s+'));
+    if (letters(line).length < 4 ||
+        tokens.length > 6 ||
+        _looksLikePageFurniture(line)) {
+      continue;
+    }
+    final wanted = tokens.map(fold).join(' ');
+    for (final token in tokens) {
+      for (final position in at[fold(token)] ?? const <int>[]) {
+        for (var size = tokens.length - 1; size <= tokens.length + 1; size++) {
+          for (var from = position - size + 1; from <= position; from++) {
+            if (size < 1 || from < 0 || from + size > words.length) continue;
+            final score = _similarity(
+              wanted,
+              folded.sublist(from, from + size).join(' '),
+            );
+            if (score <= bestScore) continue;
+            final model = _modelFromManualTitle(
+              trimmed(words.sublist(from, from + size).join(' ')),
+            );
+            if (model != null && modelLike(model)) {
+              bestScore = score;
+              best = model;
+            }
+          }
+        }
+      }
+    }
+  }
+  return best ?? pick;
+}
+
+/// 1 minus the edit distance between [a] and [b] over the longer length.
+double _similarity(String a, String b) {
+  if (a.isEmpty && b.isEmpty) return 1;
+  var previous = List<int>.generate(b.length + 1, (i) => i);
+  for (var i = 1; i <= a.length; i++) {
+    final current = List<int>.filled(b.length + 1, 0)..[0] = i;
+    for (var j = 1; j <= b.length; j++) {
+      final cost = a.codeUnitAt(i - 1) == b.codeUnitAt(j - 1) ? 0 : 1;
+      current[j] = [
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + cost,
+      ].reduce((x, y) => x < y ? x : y);
+    }
+    previous = current;
+  }
+  return 1 - previous[b.length] / (a.length > b.length ? a.length : b.length);
 }
 
 String? _modelFromFilename(String name) {
