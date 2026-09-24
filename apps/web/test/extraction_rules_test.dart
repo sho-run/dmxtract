@@ -1,6 +1,7 @@
 @TestOn('vm')
 library;
 
+import 'dart:convert';
 import 'dart:io';
 import 'package:dmxtract_web/src/extraction_rules.dart';
 import 'package:dmxtract_web/src/model.dart';
@@ -2256,6 +2257,669 @@ CHANNEL      CH: 06, 07, 08, 12                       DMX Channel Mode
       12,
     });
   });
+
+  test('parses an ADJ/Eliminator "<N>-CH MODE" DMX Traits table whose '
+      'smaller mode is a reordered subset (Eliminator Furious Five RG)', () {
+    // See _modeColumnTraitsTables in extraction_rules.dart for the layout:
+    // blank cells rather than dashes where a mode lacks a function, position
+    // numbers vertically centered in merged cells (mid-list, alone, or only
+    // beside each other), "(cont'd from prev page)" continuations wrapped
+    // across several lines, and an 11-channel mode that is not the first 11
+    // channels of the 24-channel one. Before this grammar, every parser
+    // missed the table and the fallback produced "Dimmer", "Light switch /
+    // strobe" and 22 "Channel N" placeholders, with the 11-channel mode as
+    // the first 11 of them.
+    // A text-layer PDF arrives with every blank cell printed as "–"; a photo
+    // or a scan arrives with the cells blank. Both must read the same table.
+    final blankCells = _furiousFiveTraitsManual.replaceAll(
+      RegExp(r'^–   |   –(?=   |$)', multiLine: true),
+      '',
+    );
+    expect(blankCells, isNot(_furiousFiveTraitsManual));
+    final fromBlank = fixtureFromManualText(blankCells, 'Furious Five RG.pdf');
+    final result = fixtureFromManualText(
+      _furiousFiveTraitsManual,
+      'Furious Five RG.pdf',
+    );
+    expect(
+      [for (final channel in fromBlank.fixture.channels) channel.toJson()],
+      [for (final channel in result.fixture.channels) channel.toJson()],
+    );
+    final fixture = result.fixture;
+    List<DmxChannel> channelsOf(String modeName) {
+      final mode = fixture.modes.singleWhere((mode) => mode.name == modeName);
+      return [
+        for (final id in mode.channelIds)
+          fixture.channels.singleWhere((channel) => channel.id == id),
+      ];
+    }
+
+    String ranges(DmxChannel channel) => channel.ranges
+        .map((range) => '${range.start}-${range.end} ${range.name}')
+        .join(' | ');
+
+    final full = channelsOf('24Ch');
+    final simple = channelsOf('11Ch');
+    expect(fixture.modes.map((mode) => mode.name), ['11Ch', '24Ch']);
+    expect(full.map((channel) => channel.name), [
+      'Master Dimmer',
+      'UV Strobe',
+      'UV Dimmer',
+      'Left-side 4-in-1 LED Color',
+      'Right-side 4-in-1 LED Color',
+      '4-in-1 LED + UV Show Mode',
+      '4-in-1 LED + UV Show Speed',
+      'White LED Dimmer',
+      'White LED Strobe',
+      'White LED Show Mode',
+      'White LED Auto Show Speed',
+      'LED Spot Dimmer',
+      'LED Spot Strobe',
+      'Left LED Spot, Outboard Color',
+      'Left LED Spot, Inboard Color',
+      'Right LED Spot, Inboard Color',
+      'Right LED Spot, Outboard Color',
+      'LED Spot Show Mode',
+      'Auto LED Spot Show Speed',
+      'Red Laser',
+      'Green Laser',
+      'Laser Movement',
+      'Laser Show Mode',
+      'Auto Laser Show Speed',
+    ]);
+    expect(simple.map((channel) => channel.name), [
+      '4-in-1 LED + UV Show Mode',
+      '4-in-1 LED + UV Show Speed',
+      '4-in-1 LED + UV Strobe',
+      'White LED Show Mode',
+      'White LED Auto Show Speed',
+      'White LED Strobe',
+      'LED Spot Show Mode',
+      'Auto LED Spot Show Speed',
+      'LED Spot Strobe',
+      'Laser Show Mode',
+      'Auto Laser Show Speed',
+    ]);
+    // Cut by a page break and rejoined by the position the halves share.
+    expect(
+      ranges(full[4]),
+      '0-7 Off | 8-24 Red | 25-41 Green | 42-58 Blue | 59-75 White | 76-92 Yellow | 93-109 Magenta | 110-126 Pink | 127-143 Cyan | 144-160 Light Green | 161-177 Lavender | 178-194 Mauve | 195-211 Peach | 212-228 Light Magenta | 229-245 Ice Blue | 246-255 Light Pink',
+    );
+    expect(
+      ranges(full[15]),
+      '0-7 Off | 8-24 Red | 25-41 Green | 42-58 Blue | 59-75 White | 76-92 Red + Green | 93-109 Red + Blue | 110-126 Red + White | 127-143 Green + Blue | 144-160 Green + White | 161-177 Blue + White | 178-194 Red + Green + Blue | 195-211 Red + Green + White | 212-228 Red + Blue + White | 229-245 Green + Blue + White | 246-255 Red + Green + Blue + White',
+    );
+    // Descriptions that wrapped, with their value centered between the
+    // halves - one of them also across a page break.
+    expect(
+      ranges(full[17]),
+      '0-7 Off | 8-34 Both LED Spots, Single Color Full Display | 35-61 Both LED Spots, Single Color Half Display | 62-88 Both LED Spots, Contrasting Single Color Half Display | 89-115 Alternating LED Spots, Single Color Half Display | 116-142 Alternating LED Spots, Single Color Full Display | 143-160 Alternating LED Spots, Pinwheel | 161-178 Both LED Spots, Pinwheel | 179-187 Both LED Spots, Single/Dual/Triple/All Color Spin | 188-200 Both LED Spots, All Color Spin | 201-255 Sound Show',
+    );
+    expect(ranges(simple[6]), ranges(full[17]));
+    // A one-range function names itself at the head of its only range.
+    expect(ranges(full[0]), '0-255 0 to 100%');
+    expect(ranges(simple[1]), '0-255 Slow to Fast');
+    expect(
+      ranges(full[21]),
+      '0-10 Off | 11-120 Counter Clockwise, Fast to Slow | 121-134 Off | 135-245 Clockwise, Slow to Fast | 246-255 Off',
+    );
+    // The prose page after the table stays out of its last channel.
+    expect(ranges(full[23]), '0-255 Slow to Fast');
+    // The 11-channel mode's own strobe, which the 24-channel mode lacks;
+    // "No strobe" is a steady setting, not a strobe range.
+    expect(simple[2].kind, 'strobe');
+    expect(simple[2].ranges.map((range) => range.safety), ['normal', 'strobe']);
+    expect(full[1].ranges.map((range) => range.safety), ['normal', 'strobe']);
+    // A laser's on/off control is not a color-mixing component.
+    expect(full[19].kind, isNot('colorIntensity'));
+    expect(full[20].kind, isNot('colorIntensity'));
+    expect(
+      fixture.channels
+          .map((channel) => channel.kind)
+          .toSet()
+          .difference(schemaChannelKinds),
+      isEmpty,
+    );
+    expect(
+      result.questions.where((question) => question.contains('channel rows')),
+      isEmpty,
+    );
+  });
+
+  test('keeps page footers out of an ADJ "<N>-CH MODE" table', () {
+    // A web address printed under each page number must not merge into the
+    // next page's first function name, and the page number must not claim a
+    // mode position ahead of the row that really holds it.
+    final withFooters = _furiousFiveTraitsManual.replaceAllMapped(
+      RegExp(r'^(1[5-9]|20)$', multiLine: true),
+      (match) => '${match[1]}\nwww.eliminatorlighting.com',
+    );
+    expect(withFooters, isNot(_furiousFiveTraitsManual));
+    final plain = fixtureFromManualText(
+      _furiousFiveTraitsManual,
+      'Furious Five RG.pdf',
+    ).fixture;
+    final footed = fixtureFromManualText(
+      withFooters,
+      'Furious Five RG.pdf',
+    ).fixture;
+    expect(
+      [for (final channel in footed.channels) channel.toJson()],
+      [for (final channel in plain.channels) channel.toJson()],
+    );
+    expect(
+      footed.modes.map((mode) => mode.channelIds),
+      plain.modes.map((mode) => mode.channelIds),
+    );
+  });
+
+  List<DmxChannel> modeChannels(FixtureProject fixture, String modeName) {
+    final mode = fixture.modes.singleWhere((mode) => mode.name == modeName);
+    return [
+      for (final id in mode.channelIds)
+        fixture.channels.singleWhere((channel) => channel.id == id),
+    ];
+  }
+
+  test('places blank-cell rows of an ADJ "<N> Ch" traits table by their '
+      'printed column (Eliminator FLUX FX)', () {
+    // Rows that only some personalities have: "11   –   –   000-255 Amber
+    // All" is 24 Ch's alone, "–   11   11   000-255 Amber Intensity 1" is
+    // 34 Ch's and 64 Ch's. Without the "–" cells both read "11 ...", and
+    // continuing each column's count can't tell them apart.
+    final fixture = fixtureFromManualText(
+      _fluxFxTraitsManual,
+      'FLUX FX.pdf',
+    ).fixture;
+    expect(fixture.modes.map((mode) => mode.name), ['24Ch', '34Ch', '64Ch']);
+    final small = modeChannels(fixture, '24Ch');
+    final medium = modeChannels(fixture, '34Ch');
+    final large = modeChannels(fixture, '64Ch');
+    expect(small[10].name, 'Amber All');
+    expect(medium[10].name, 'Amber Intensity 1');
+    expect(large[10].name, 'Amber Intensity 1');
+    expect(small[13].name, 'RGB Color Macro');
+    expect(medium[19].name, 'RGB Background All Red');
+    expect(large[19].name, 'RGB Background 1 red');
+    expect(medium[26].name, 'Halo Strip is red');
+    expect(large[41].name, 'Halo Strip 1 is red');
+    for (final mode in [small, medium, large]) {
+      expect(mode.last.name, 'Macro');
+      expect(mode.last.ranges.length, 5);
+      expect(
+        mode.where((channel) => channel.name.startsWith('Channel ')),
+        isEmpty,
+      );
+    }
+  });
+
+  test('fills in pixel blocks an ADJ traits table skips with a "…" row, and '
+      'reads single DMX values (ADJ VIZI FX7)', () {
+    final fixture = fixtureFromManualText(
+      _viziFx7TraitsExcerpt,
+      'VIZI FX7.pdf',
+    ).fixture;
+    expect(fixture.modes.map((mode) => mode.name), [
+      '31Ch',
+      '55Ch',
+      '57Ch',
+      '60Ch',
+      '237Ch',
+    ]);
+    // "Red 2".."Lime 2", "…", "Red 6".."Lime 6": pixels 3 to 5 come back.
+    expect(modeChannels(fixture, '55Ch').sublist(12, 24).map((c) => c.name), [
+      for (final pixel in [3, 4, 5])
+        for (final color in ['Red', 'Green', 'Blue', 'Lime']) '$color $pixel',
+    ]);
+    final full = modeChannels(fixture, '237Ch');
+    expect(full[50].name, 'Ring Red 3');
+    expect(full[220].name, 'Ring Blue 59');
+    expect(full[221].name, 'Ring Red 60');
+    expect(modeChannels(fixture, '31Ch')[2].name, 'All Main Red');
+    // "000   No Function" is a single value, not position 0.
+    expect(modeChannels(fixture, '55Ch')[28].ranges.first.start, 0);
+    expect(modeChannels(fixture, '55Ch')[28].ranges.first.end, 0);
+    // Two name rows in one merged cell are one channel; "141   0.1 s" is a
+    // single value, and the table's own stray "55   55" row is dropped.
+    final dimming = modeChannels(fixture, '57Ch')[53];
+    expect(dimming.name, 'Dim Modes / Dimming Speed');
+    expect(
+      dimming.ranges.where((range) => range.start == 141).single.name,
+      '0.1 s',
+    );
+    expect(dimming.ranges.where((range) => range.name == '55'), isEmpty);
+    expect(modeChannels(fixture, '31Ch')[27].name, 'Internal Progrms');
+    expect(modeChannels(fixture, '60Ch')[55].name, 'Internal Progrms');
+    expect(full[232].name, 'Internal Progrms');
+  });
+
+  test('keeps a channel whole across name rows and pages in an ADJ traits '
+      'table (ADJ Protégé XL)', () {
+    final fixture = fixtureFromManualText(
+      _protegeXlTraitsExcerpt,
+      'Protege XL.pdf',
+    ).fixture;
+    final full = modeChannels(fixture, '45Ch');
+    expect(full.take(15).map((channel) => channel.name), [
+      'Pan',
+      'Pan Fine',
+      'Tilt',
+      'Tilt Fine',
+      'Continuous Pan',
+      'Cyan',
+      'Cyan Fine',
+      'Magenta',
+      'Magenta Fine',
+      'Yellow',
+      'Yellow Fine',
+      'CTO',
+      'CTO Fine',
+      'White Color Temp Presets',
+      'Color Wheel',
+    ]);
+    expect(modeChannels(fixture, '36Ch')[1].fineOf, isNotNull);
+    // Special Functions, then "LED Refresh Rate (Hz)", "Internal Programs"
+    // and "CT Mode" name rows over three pages, the numbers beside only some
+    // of them - one of those rows ending in its own value ("30   36   45
+    // 237   6000").
+    final special = full[44];
+    expect(special.name, startsWith('Special Functions'));
+    expect(modeChannels(fixture, '36Ch')[35].name, special.name);
+    expect(modeChannels(fixture, '30Ch')[29].name, special.name);
+    String at(int value) =>
+        special.ranges.singleWhere((range) => range.start == value).name;
+    expect(at(173), '900');
+    expect(at(237), '6000');
+    expect(at(242), 'Internal Program 1');
+    expect(at(250), 'Enable CT Mode');
+    final values = [...special.ranges]
+      ..sort((a, b) => a.start.compareTo(b.start));
+    expect(values.first.start, 0);
+    expect(values.last.end, 255);
+    for (var i = 1; i < values.length; i++) {
+      expect(values[i].start, values[i - 1].end + 1, reason: values[i].name);
+    }
+  });
+
+  test('reads an ADJ traits table whose header misprints one count on its '
+      'first page (ADJ Encore LP12Z IP)', () {
+    // Page one of the table reads "6Ch 9Ch 10Ch 12Ch 15Ch 16Ch", the next
+    // two "... 18Ch": one table, an 18-channel personality. One-range rows
+    // wrap their descriptions too ("Auto Programs Fade, minimum to maximum"
+    // / "000 - 255" / "fade").
+    final fixture = fixtureFromManualText(
+      _encoreLp12zTraitsExcerpt,
+      'Encore LP12Z IP.pdf',
+    ).fixture;
+    expect(fixture.modes.map((mode) => mode.name), [
+      '6Ch',
+      '9Ch',
+      '10Ch',
+      '12Ch',
+      '15Ch',
+      '18Ch',
+    ]);
+    expect(modeChannels(fixture, '18Ch').skip(12).map((c) => c.name), [
+      'Auto Programs',
+      'Auto Programs Speed',
+      'Auto Programs Fade',
+      'Dim Mode',
+      'Dim Curves',
+      'Special Functions',
+    ]);
+    expect(modeChannels(fixture, '15Ch').skip(12).map((c) => c.name), [
+      'Dim Mode',
+      'Dim Curves',
+      'Special Functions',
+    ]);
+    expect(modeChannels(fixture, '10Ch')[1].name, 'Red Fine');
+    for (final mode in fixture.modes) {
+      expect(
+        modeChannels(
+          fixture,
+          mode.name,
+        ).where((c) => c.name.startsWith('Channel ')),
+        isEmpty,
+      );
+    }
+  });
+
+  test('reads a name that starts with a number, and a "..." pixel run, in an '
+      'ADJ traits table (Eliminator Fantasy FX)', () {
+    final fixture = fixtureFromManualText(
+      _fantasyFxTraitsExcerpt,
+      'Fantasy FX.pdf',
+    ).fixture;
+    expect(fixture.modes.map((mode) => mode.name), ['7Ch', '16Ch', '152Ch']);
+    // "64 Color Macros" is a name row, not the single DMX value 64.
+    final macros = modeChannels(fixture, '16Ch')[11];
+    expect(macros.name, '64 Color Macros');
+    expect(macros.ranges.single.start, 0);
+    expect(macros.ranges.single.end, 255);
+    final pixels = modeChannels(fixture, '152Ch');
+    expect(pixels[6].name, 'Background 1 Red');
+    expect(pixels[9].name, 'Background 2 Red');
+    expect(pixels[146].name, 'Background 47 Blue');
+    expect(pixels[147].name, 'Background 48 Red');
+    expect(modeChannels(fixture, '7Ch').map((c) => c.name), [
+      'Main Red',
+      'Main Green',
+      'Main Blue',
+      'Main White',
+      'Background Red All',
+      'Background Green All',
+      'Background Blue All',
+    ]);
+  });
+
+  test('reads lettered personalities, and keeps one misprinted position from '
+      'resizing its mode, in an ADJ traits table (COB Cannon LP200X)', () {
+    final result = fixtureFromManualText(
+      _cobCannonTraitsExcerpt,
+      'COB Cannon LP200X.pdf',
+    );
+    final fixture = result.fixture;
+    expect(fixture.modes.map((mode) => mode.name), [
+      '5Ch',
+      '8Ch-A',
+      '8Ch-B',
+      '9Ch',
+      '10Ch-A',
+      '10Ch-B',
+      '12Ch',
+      '13Ch',
+      '16Ch',
+      '20Ch',
+    ]);
+    expect(modeChannels(fixture, '8Ch-B').take(5).map((c) => c.name), [
+      'Color Macros',
+      'Color Temperature',
+      'Shutter, Strobe',
+      'Dimmer (Intensity)',
+      'Dimmer Fine 16-bit',
+    ]);
+    // The manual prints "166" for Auto Programs Speed in the 20Ch column,
+    // between its 15 and 17: that position is left for the user to check
+    // rather than stretching the mode to 166 channels. This page holds 16
+    // of the mode's 20 rows; the rest are on the next.
+    final wide = modeChannels(fixture, '20Ch');
+    expect(wide, hasLength(20));
+    expect(wide[14].name, 'Auto programs');
+    expect(wide[15].name, 'Channel 16');
+    expect(wide[16].name, 'Auto Programs Fade');
+    expect(
+      result.questions,
+      contains(
+        '20Ch: we read 16 of 20 channel rows. Check the highlighted controls.',
+      ),
+    );
+    // A description printed on the line under its value row is that
+    // value's, not the next function's name.
+    expect(wide[10].name, 'Color Macros');
+    expect(wide[10].ranges.single.name, '(See Color Macros)');
+    expect(wide[11].name, 'Color Temperature');
+  });
+
+  test('reads spaced lettered personalities, and position numbers printed on '
+      'a line of a description, in an ADJ traits table (Mirage Par H IP)', () {
+    final fixture = fixtureFromManualText(
+      _mirageParHTraitsExcerpt,
+      'Mirage Par H IP.pdf',
+    ).fixture;
+    expect(fixture.modes.map((mode) => mode.name), [
+      '5Ch',
+      '6Ch',
+      '9Ch A',
+      '9Ch B',
+      '15Ch',
+      '17Ch',
+    ]);
+    expect(modeChannels(fixture, '5Ch').map((c) => c.name), [
+      'Color Temperature',
+      'White Color Temperature Presets',
+      'Shutter',
+      'Dimmer',
+      'Dimmer Fine',
+    ]);
+    expect(modeChannels(fixture, '9Ch B').take(7).map((c) => c.name), [
+      'Colors Macros',
+      'Color Temperature',
+      'White Color Temperature Presets',
+      'Shutter',
+      'Dimmer',
+      'Dimmer Fine',
+      'Internal Programs',
+    ]);
+    // "2   –   9   3   9   9   White Color Temperature Presets," carries
+    // the presets channel's numbers on the first line of its 23 - 99
+    // description, not on a value.
+    final presets = modeChannels(fixture, '17Ch')[8];
+    expect(presets.name, 'White Color Temperature Presets');
+    expect(
+      presets.ranges.map((range) => (range.start, range.end, range.name)),
+      [
+        (0, 22, 'Open'),
+        (
+          23,
+          99,
+          'White Color Temperature Presets, refer to Color Temperature Chart',
+        ),
+        (100, 255, 'No Function'),
+      ],
+    );
+  });
+
+  test('reads counts printed over their units, and a dotted row that skips '
+      'pixels, in an ADJ traits table (ElectraPix Bar 16)', () {
+    final fixture = fixtureFromManualText(
+      _electraPixBar16TraitsExcerpt,
+      'ElectraPix Bar 16.pdf',
+    ).fixture;
+    expect(fixture.modes.map((mode) => mode.name), [
+      '5Ch',
+      '6Ch',
+      '7Ch',
+      '9Ch',
+      '12Ch',
+      '13Ch',
+      '22Ch',
+      '24Ch',
+      '96Ch',
+      '99Ch',
+      '114Ch',
+    ]);
+    // "..   ...   ...   0-255 ..." skips pixels 2 to 15, and the first
+    // pixel is printed "Red1" where the last is "Red 16".
+    final pixels = modeChannels(fixture, '96Ch');
+    expect(pixels.where((c) => c.name.startsWith('Channel ')), isEmpty);
+    expect(pixels[7].name, 'Green 2');
+    expect(pixels[89].name, 'UV 15');
+    expect(pixels[90].name, 'Red 16');
+    expect(modeChannels(fixture, '99Ch').skip(96).map((c) => c.name), [
+      'Background Red',
+      'Background Green',
+      'Background Blue',
+    ]);
+    // "RGBAL+UV Programs Speed : Slow to" / "0-255" / "Fast speed".
+    expect(
+      modeChannels(fixture, '13Ch')[8].name,
+      'RGBAL+UV Programs Speed : Slow to Fast speed',
+    );
+  });
+
+  test('reads fourteen stacked counts, a name broken by a hyphen on its '
+      'position row, and a description wrapped after "0 to", in an ADJ '
+      'traits table (Jolt Panel FX2)', () {
+    final fixture = fixtureFromManualText(
+      _joltPanelFx2TraitsExcerpt,
+      'Jolt Panel FX2.pdf',
+    ).fixture;
+    expect(fixture.modes.map((mode) => mode.name), [
+      '6Ch',
+      '9Ch',
+      '13Ch',
+      '18Ch',
+      '20Ch',
+      '36Ch',
+      '41Ch',
+      '43Ch',
+      '51Ch',
+      '81Ch',
+      '83Ch',
+      '126Ch',
+      '141Ch',
+      '143Ch',
+    ]);
+    for (final mode in fixture.modes) {
+      expect(
+        modeChannels(
+          fixture,
+          mode.name,
+        ).where((c) => c.name.startsWith('Channel ')),
+        isEmpty,
+        reason: mode.name,
+      );
+    }
+    final thirteen = modeChannels(fixture, '13Ch');
+    expect(thirteen.map((c) => c.name), [
+      'Outer Red',
+      'Outer Green',
+      'Outer Blue',
+      'Inner White',
+      'Outer Color Macros',
+      'Dimmer',
+      'Dimmer Fine',
+      'Outer Strobe Effect',
+      'Outer Strobe Rate',
+      'Outer Strobe Duration',
+      'Outer Program Macro',
+      'Inner Program Macro',
+      'In/Out Program',
+    ]);
+    expect(thirteen[1].ranges.single.name, '0 to 100%');
+    // "Inner Program Macro" / "... 000-255" / "Speed", right after the
+    // Inner Program Macro channel itself: one name wrapped around its value.
+    expect(modeChannels(fixture, '18Ch').skip(16).map((c) => c.name), [
+      'Inner Program Macro',
+      'Inner Program Macro Speed',
+    ]);
+  });
+
+  test('keeps names whole where they wrap around their values in an ADJ '
+      'traits table (ElectraPix Par 7)', () {
+    final fixture = fixtureFromManualText(
+      _electraPixPar7TraitsExcerpt,
+      'ElectraPix Par 7.pdf',
+    ).fixture;
+    final wide = modeChannels(fixture, '60Ch');
+    expect(wide.where((c) => c.name.startsWith('Channel ')), isEmpty);
+    // "RGB Background" / "Color Macros ," is one name above its value, not
+    // a description of Background Blue; "White Color Temper -" / "ature
+    // Presets" is one word; "RGBAL+UV Pro -" / "... 000-255 grams Speed ," /
+    // "slow to fast" finishes its name on the value row; "RGB Background" /
+    // "... 000-255 Program Fade , least" / "to most" does too.
+    expect(wide.sublist(44, 58).map((c) => c.name), [
+      'Background Green',
+      'Background Blue',
+      'RGB Background Color Macros',
+      'Color Temperature',
+      'White Color Temperature Presets',
+      'Shutter, Strobe',
+      'Dimmer (Intensity )',
+      'Dimmer Fine (Intensity)',
+      'RGBAL+UV Programs',
+      'RGBAL+UV Programs Speed',
+      'RGBAL+UV Programs Fade',
+      'RGB Background Programs',
+      'RGB Background Programs Speed',
+      'RGB Background Program Fade',
+    ]);
+    expect(wide[46].ranges.single.name, 'see Color Macros section');
+    // "2300–9900K Linear," / "0–100%" is a description wrapped at a comma.
+    expect(wide[47].ranges.single.name, '2300–9900K Linear');
+    expect(wide[57].ranges.single.name, 'least to most');
+  });
+
+  test('reads an ADJ traits table whose header ends in "FUNCTIONS" '
+      '(ADJ Element Hex IP)', () {
+    final fixture = fixtureFromManualText(
+      _elementHexIpTraitsExcerpt,
+      'Element Hex IP.pdf',
+    ).fixture;
+    expect(fixture.modes.map((mode) => mode.name), [
+      '6Ch',
+      '7Ch',
+      '8Ch',
+      '11Ch',
+      '12Ch',
+    ]);
+    final twelve = modeChannels(fixture, '12Ch').map((c) => c.name);
+    expect(twelve.take(9), [
+      'RED',
+      'GREEN',
+      'BLUE',
+      'WHITE',
+      'AMBER',
+      'UV',
+      'MASTER DIMMER',
+      'STROBING/SHUTTER',
+      'PROGRAM SELECTION MODE',
+    ]);
+    // Channel 10 is PROGRAMS: four 0-255 tables, one per program mode,
+    // under one merged "10" cell. Only the table beside the number is read,
+    // a known gap left out of this test.
+    expect(twelve.skip(10), [
+      'PROGRAM SPEED/SOUND SENSITIVITY',
+      'DIMMER CURVES',
+    ]);
+  });
+
+  test('keeps a one-range name rule off a list of values in an ADJ traits '
+      'table (Eliminator LP 8R)', () {
+    final fixture = fixtureFromManualText(
+      _lp8rTraitsExcerpt,
+      'LP 8R.pdf',
+    ).fixture;
+    // "Auto Run" / "000-029 Empty , No Function" names a value, not the rest
+    // of the function's name: the comma rule is for a single 0-255 value.
+    expect(modeChannels(fixture, '3Ch').map((c) => c.name), [
+      'Auto Run',
+      'Color macro function',
+      'Speed / Sound sensitivity',
+    ]);
+  });
+
+  test('folds extraction-only channel kinds onto the fixture schema', () {
+    // The Rust core rejects a kind outside schemas/fixture-v1.json's
+    // ChannelKind enum as invalid JSON, which used to fail validation and
+    // both exports for any fixture with a "... Mode" or CTC channel.
+    final schema =
+        jsonDecode(File('../../schemas/fixture-v1.json').readAsStringSync())
+            as Map<String, Object?>;
+    final channelKind =
+        (schema[r'$defs']! as Map<String, Object?>)['ChannelKind']!
+            as Map<String, Object?>;
+    expect(schemaChannelKinds, (channelKind['enum']! as List).toSet());
+    final show = DmxChannel(id: 'show', name: 'Show Mode', kind: 'mode');
+    expect(show.kind, 'effect');
+    expect(show.gdtfAttribute, 'Effects1');
+    final ctc = DmxChannel(
+      id: 'ctc',
+      name: 'Color temperature',
+      kind: 'colorTemperature',
+    );
+    expect(ctc.kind, 'generic');
+    expect(ctc.gdtfAttribute, 'CTC');
+    // A project saved before the fold reloads as an exportable one.
+    expect(
+      DmxChannel.fromJson({
+        'id': 'show',
+        'name': 'Show Mode',
+        'kind': 'mode',
+      }).kind,
+      'effect',
+    );
+  });
 }
 
 /// Builds a synthetic "N-channel mode" manual excerpt modeled on a
@@ -2354,3 +3018,2112 @@ String _sequentialModeManual({required bool noisy}) {
     ..writeln('58 W7 LED Dimming 0-255 White zone 7 brightness');
   return b.toString();
 }
+
+/// The Eliminator Furious Five RG manual's cover and its whole DMX Traits
+/// table (pages 15-20), verbatim from this app's own PDF.js text pass
+/// (manual_extractor.js's positionedText(), blank position cells printed as
+/// "–" by table_columns.js) - including the per-page title lines, "CONTINUED
+/// ON NEXT PAGE" footers and page numbers - followed by the first lines of
+/// the prose page after the table.
+const _furiousFiveTraitsManual = r'''
+=== DMXTRACT PAGE 1 ===
+Furious Five RG
+User Manual
+SKU#:   Furious Five RG
+UPC#:   818651028096
+ITF-14#:   10818651028093
+
+=== DMXTRACT PAGE 15 ===
+D M X T R A I T S
+Eliminator Furious Five RG - DMX Traits
+Software Version 2.0
+CHANNEL
+DMX VALUE DESCRIPTION
+11-CH MODE 24-CH MODE
+–   1   000 - 255   Master Dimmer , 0 to 100%
+UV Strobe
+–   2   000 - 007   No strobe
+008 - 255   Strobe, slow to fast
+UV Dimmer
+–   3   000 - 007   Off
+008 - 255   Dimmer, 0% to 100%
+Left-side 4-in-1 LED Color
+000 - 007   Off
+008 - 024   Red
+025 - 041   Green
+042 - 058   Blue
+059 - 075   White
+076 - 092   Yellow
+093 - 109   Magenta
+–   4   110 - 126   Pink
+127 - 143   Cyan
+144 - 160   Light Green
+161 - 177   Lavender
+178 - 194   Mauve
+195 - 211   Peach
+212 - 228   Light Magenta
+229 - 245   Ice Blue
+246 - 255   Light Pink
+Right-side 4-in-1 LED Color
+000 - 007   Off
+008 - 024   Red
+–   5
+025 - 041   Green
+042 - 058   Blue
+059 - 075   White
+CONTINUED ON NEXT PAGE
+15
+
+=== DMXTRACT PAGE 16 ===
+D M X T R A I T S
+Eliminator Furious Five RG - DMX Traits
+Software Version 2.0
+CHANNEL
+DMX VALUE DESCRIPTION
+11-CH MODE 24-CH MODE
+Right-side 4-in-1 LED Color ( cont’d from prev
+page)
+076 - 092   Yellow
+093 - 109   Magenta
+110 - 126   Pink
+127 - 143   Cyan
+5 ( cont’d from
+144 - 160   Light Green
+prev page )
+161 - 177   Lavender
+178 - 194   Mauve
+195 - 211   Peach
+212 - 228   Light Magenta
+229 - 245   Ice Blue
+246 - 255   Light Pink
+4-in-1 LED + UV Show Mode
+000 - 007   Off
+008 - 045   Jump
+046 - 064   Smooth Fade
+065 - 083   Fast Pulse
+1   6   084 - 102   Slow Pulse
+103 - 121   Left/Right Jump
+122 - 140   Flash
+141 - 159   Left/Right Flash
+160 - 200   Left/Right Fade
+201 - 255   Sound Show
+2   7   000 - 255   4-in-1 LED + UV Show Speed , Slow to Fast
+4-in-1 LED + UV Strobe
+3   –   000 - 007   Off
+008 - 255   Strobe, Slow to Fast
+–   8   000 - 255   White LED Dimmer , 0% to 100%
+CONTINUED ON NEXT PAGE
+16
+
+=== DMXTRACT PAGE 17 ===
+D M X T R A I T S
+Eliminator Furious Five RG - DMX Traits
+Software Version 2.0
+CHANNEL
+DMX VALUE DESCRIPTION
+11-CH MODE 24-CH MODE
+White LED Strobe
+6   9   000 - 007   Off
+008 - 255   Strobe, Slow to Fast
+White LED Show Mode
+000 - 007   Off
+4   10
+008 - 200   Auto Show
+201 - 255   Sound Show
+5   11   000 - 255   White LED Auto Show Speed , Slow to Fast
+–   12   000 - 255   LED Spot Dimmer , 0% to 100%
+LED Spot Strobe
+9   13   000 - 007   Off
+008 - 255   Strobe, Slow to Fast
+Left LED Spot, Outboard Color
+000 - 007   Off
+008 - 024   Red
+025 - 041   Green
+042 - 058   Blue
+059 - 075   White
+076 - 092   Red + Green
+093 - 109   Red + Blue
+–   14   110 - 126   Red + White
+127 - 143   Green + Blue
+144 - 160   Green + White
+161 - 177   Blue + White
+178 - 194   Red + Green + Blue
+195 - 211   Red + Green + White
+212 - 228   Red + Blue + White
+229 - 245   Green + Blue + White
+246 - 255   Red + Green + Blue + White
+CONTINUED ON NEXT PAGE
+17
+
+=== DMXTRACT PAGE 18 ===
+D M X T R A I T S
+Eliminator Furious Five RG - DMX Traits
+Software Version 2.0
+CHANNEL
+DMX VALUE DESCRIPTION
+11-CH MODE 24-CH MODE
+Left LED Spot, Inboard Color
+000 - 007   Off
+008 - 024   Red
+025 - 041   Green
+042 - 058   Blue
+059 - 075   White
+076 - 092   Red + Green
+093 - 109   Red + Blue
+–   15   110 - 126   Red + White
+127 - 143   Green + Blue
+144 - 160   Green + White
+161 - 177   Blue + White
+178 - 194   Red + Green + Blue
+195 - 211   Red + Green + White
+212 - 228   Red + Blue + White
+229 - 245   Green + Blue + White
+246 - 255   Red + Green + Blue + White
+Right LED Spot, Inboard Color
+000 - 007   Off
+008 - 024   Red
+025 - 041   Green
+042 - 058   Blue
+059 - 075   White
+–   16   076 - 092   Red + Green
+093 - 109   Red + Blue
+110 - 126   Red + White
+127 - 143   Green + Blue
+144 - 160   Green + White
+161 - 177   Blue + White
+178 - 194   Red + Green + Blue
+CONTINUED ON NEXT PAGE
+18
+
+=== DMXTRACT PAGE 19 ===
+D M X T R A I T S
+Eliminator Furious Five RG - DMX Traits
+Software Version 2.0
+CHANNEL
+DMX VALUE DESCRIPTION
+11-CH MODE 24-CH MODE
+Right LED Spot, Inboard Color (cont’d from
+prev page)
+16 (cont’d   195 - 211   Red + Green + White
+from prev
+212 - 228   Red + Blue + White
+page)
+229 - 245   Green + Blue + White
+246 - 255   Red + Green + Blue + White
+Right LED Spot, Outboard Color
+000 - 007   Off
+008 - 024   Red
+025 - 041   Green
+042 - 058   Blue
+059 - 075   White
+076 - 092   Red + Green
+093 - 109   Red + Blue
+–   17   110 - 126   Red + White
+127 - 143   Green + Blue
+144 - 160   Green + White
+161 - 177   Blue + White
+178 - 194   Red + Green + Blue
+195 - 211   Red + Green + White
+212 - 228   Red + Blue + White
+229 - 245   Green + Blue + White
+246 - 255   Red + Green + Blue + White
+LED Spot Show Mode
+000 - 007   Off
+008 - 034   Both LED Spots, Single Color Full Display
+035 - 061   Both LED Spots, Single Color Half Display
+7   18
+Both LED Spots, Contrasting Single Color Half
+062 - 088
+Display
+089 - 115   Alternating LED Spots, Single Color Half Display
+116 - 142   Alternating LED Spots, Single Color Full Display
+CONTINUED ON NEXT PAGE
+19
+
+=== DMXTRACT PAGE 20 ===
+D M X T R A I T S
+Eliminator Furious Five RG - DMX Traits
+Software Version 2.0
+CHANNEL
+DMX VALUE DESCRIPTION
+11-CH MODE 24-CH MODE
+LED Spot Show Mode (cont’d from prev page)
+143 - 160   Alternating LED Spots, Pinwheel
+18 (cont’d   161 - 178   Both LED Spots, Pinwheel
+7 (cont’d from
+from prev   Both LED Spots, Single/Dual/Triple/All Color
+prev page)   179 - 187
+page)   Spin
+188 - 200   Both LED Spots, All Color Spin
+201 - 255   Sound Show
+8   19   000 - 255   Auto LED Spot Show Speed , Slow to Fast
+Red Laser
+–   20   000 - 127   Off
+128 - 255   On
+Green Laser
+–   21   000 - 127   Off
+128 - 255   On
+Laser Movement
+000 - 010   Off
+011 - 120   Counter Clockwise, Fast to Slow
+–   22
+121 - 134   Off
+135 - 245   Clockwise, Slow to Fast
+246 - 255   Off
+Laser Show Mode
+000 - 007   Off
+10   23
+008 - 200   Auto
+201 - 255   Sound Show
+11   24   000 - 255   Auto Laser Show Speed , Slow to Fast
+20
+
+=== DMXTRACT PAGE 21 ===
+I R R E M O T E O P E R A T I O N
+0: Switches fixture to AUT1 Mode (Red/Green Laser Auto Show).
+1-9 NUMBER PAD: Switches 4-in-1 LEDs to one of nine color presets. Note that the display color
+''';
+
+/// The Eliminator FLUX FX manual's whole DMX Traits table (pages 17-19),
+/// verbatim from this app's PDF.js text pass with blank cells as "–".
+const _fluxFxTraitsManual = r'''
+=== DMXTRACT PAGE 17 ===
+D M X T R A I T S
+CHANNEL MODE   DMX
+FUNCTION
+24 Ch 34 Ch 64 Ch VALUES
+1   1   1   000-255 All Heads Tilt
+All Heads Continuous Rotation
+000-049 0~360 degrees enabled (speed from fast to slow)
+2   2   2   050-151 Counterclockwise infinite rotation (speed from fast to slow)
+152-153 Stop
+154-255 Clockwise infinite rotation (speed from slow to fast)
+3   3   3   000-255 Head 1 Tilt
+Head 1 Continuous Rotation
+000-049 0~360 degrees enabled (speed from fast to slow)
+4   4   4   050-151 Counterclockwise infinite rotation (speed from fast to slow)
+152-153 Stop
+154-255 Clockwise infinite rotation (speed from slow to fast)
+5   5   5   000-255 Head 2 Tilt
+Head 2 Continuous Rotation
+000-049 0~360 degrees enabled (speed from fast to slow)
+6   6   6   050-151 Counterclockwise infinite rotation (speed from fast to slow)
+152-153 Stop
+154-255 Clockwise infinite rotation (speed from slow to fast)
+7   7   7   000-255 Head 3 Tilt
+Head 3 Continuous Rotation
+000-049 0~360 degrees enabled (speed from fast to slow)
+8   8   8   050-151 Counterclockwise infinite rotation (speed from fast to slow)
+152-153 Stop
+154-255 Clockwise infinite rotation (speed from slow to fast)
+9   9   9   000-255 Master Dimmer
+Amber Strobe
+10   10   10   000-004 No Function
+005-255 The flicker speed is from slow to fast (0.5HZ~25HZ)
+11   –   –   000-255 Amber All
+–   11   11   000-255 Amber Intensity 1
+–   12   12   000-255 Amber Intensity 2
+–   13   13   000-255 Amber Intensity 3
+–   14   14   000-255 Amber Intensity 4
+–   15   15   000-255 Amber Intensity 5
+–   16   16   000-255 Amber Intensity 6
+12   17   17   000-255 Amber Effect
+13   18   18   000-255 Amber Effect Speed
+14   –   –   000-255 RGB Color Macro
+RGB Background Strobe
+–   19   19   000-004 No Function
+005-255 Strobe speed is from slow to fast (0.5HZ~25HZ)
+–   20   –   000-255 RGB Background All Red
+–   21   –   000-255 RGB Background All Green
+–   22   –   000-255 RGB Background All Blue
+17
+
+=== DMXTRACT PAGE 18 ===
+D M X T R A I T S
+CHANNEL MODE   DMX
+FUNCTION
+24 Ch 34 Ch 64 Ch VALUES
+–   –   20   000-255 RGB Background 1 red
+–   –   21   000-255 RGB Background 1 green
+–   –   22   000-255 RGB Background 1 blue
+–   –   23   000-255 RGB Background 2 red
+–   –   24   000-255 RGB Background 2 green
+–   –   25   000-255 RGB Background 2 blue
+–   –   26   000-255 RGB Background 3 red
+–   –   27   000-255 RGB Background 3 green
+–   –   28   000-255 RGB Background 3 blue
+–   –   29   000-255 RGB Background 4 red
+–   –   30   000-255 RGB Background 4 green
+–   –   31   000-255 RGB Background 4 blue
+–   –   32   000-255 RGB Background 5 red
+–   –   33   000-255 RGB Background 5 green
+–   –   34   000-255 RGB Background 5 blue
+–   –   35   000-255 RGB Background 6 red
+–   –   36   000-255 RGB Background 6 green
+–   –   37   000-255 RGB Background 6 blue
+15   23   38   000-255 RGB Background Effect
+16   24   39   000-255 RGB Background Effect Speed
+17   25   40   000-255 Background color for fill effect
+18   26   41   000-255 RGB Background Color Intensity
+19   –   –   000-255 Halo Strip Color Macro
+–   27   –   000-255 Halo Strip is red
+–   28   –   000-255 Halo Strip is green
+–   29   –   000-255 Halo Strip is blue
+–   –   42   000-255 Halo Strip 1 is red
+–   –   43   000-255 Halo Strip 1 is green
+–   –   44   000-255 Halo Strip 1 is blue
+–   –   45   000-255 Halo Strip 2 is red
+–   –   46   000-255 Halo Strip 2 is green
+–   –   47   000-255 Halo Strip 2 is blue
+–   –   48   000-255 Halo Strip 3 is red
+–   –   49   000-255 Halo Strip 3 is green
+–   –   50   000-255 Halo Strip 3 is blue
+–   –   51   000-255 Halo Strip 4 is red
+–   –   52   000-255 Halo Strip 4 is green
+–   –   53   000-255 Halo Strip 4 is blue
+–   –   54   000-255 Halo Strip 5 is red
+–   –   55   000-255 Halo Strip 5 is green
+–   –   56   000-255 Halo Strip 5 is blue
+–   –   57   000-255 Halo Strip 6 is red
+–   –   58   000-255 Halo Strip 6 is green
+–   –   59   000-255 Halo Strip 6 is blue
+18
+
+=== DMXTRACT PAGE 19 ===
+D M X T R A I T S
+CHANNEL MODE   DMX
+FUNCTION
+24 Ch 34 Ch 64 Ch VALUES
+20   30   60   000-255 Halo Strip Effect
+21   31   61   000-255 Halo Strip Effect Speed
+22   32   62   000-255 Halo Strip Background Color
+23   33   63   000-255 Halo Strip Background Color Intensity
+Macro
+000-014 No Function
+015-199 Auto mode
+24   34   64
+200-229 Sound active mode
+230-240 The motor resets and remains reset for 3 seconds
+241-255 No Function
+19
+''';
+
+/// Three of the six DMX Traits pages of ADJ's VIZI FX7 manual (19, 21, 22),
+/// verbatim from this app's PDF.js text pass with blank cells as "–".
+const _viziFx7TraitsExcerpt = r'''
+=== DMXTRACT PAGE 19 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+31Ch   55Ch   57Ch   60Ch 237Ch VALUES
+1   1   1   1   1   000-255 Pan , 0-540, 8-bit Pan
+–   2   2   2   2   000-255 Pan Fine , 16-bit Pan
+2   3   3   3   3   000-255 Tilt , 0-270, 8-bit Tilt
+–   4   4   4   4   000-255 Tilt Fine , 16-bit Tilt
+3   –   –   –   –   000-255 All Main Red , All Main Red
+4   –   –   –   –   000-255 All Main Green , All Main Green
+5   –   –   –   –   000-255 All Main Blue , All Main Blue
+6   –   –   –   –   000-255 All Main Lime , All Main Lime
+–   5   5   5   5   000-255 Red 1 , Red 1
+–   6   6   6   6   000-255 Green 1 , Green 1
+–   7   7   7   7   000-255 Blue 1 , Blue 1
+–   8   8   8   8   000-255 Lime 1 , Lime 1
+–   9   9   9   9   000-255 Red 2 , Red 2
+–   10   10   10   10   000-255 Green 2 , Green 2
+–   11   11   11   11   000-255 Blue 2 , Blue 2
+–   12   12   12   12   000-255 Lime 2 , Lime 2
+…   …   …   …   …   …   … , ...
+–   25   25   25   25   000-255 Red 6 , Red 6
+–   26   26   26   26   000-255 Green 6 , Green 6
+–   27   27   27   27   000-255 Blue 6 , Blue 6
+–   28   28   28   28   000-255 Lime 6 , Lime 6
+CCT Presets
+000   No Function
+001-060 2700K
+061-179 3000K
+180-201 3200K
+202-207 4000K
+–   29   29   29   29
+208-229 4500K
+230-234 5000K
+235-239 5600K
+240-244 6500K
+245-249 8000K
+250-255 10000K
+Color Macros
+–   30   30   30   30   000   Off
+001-255 64 Color Macros
+RGBL Program
+000-000 RGBL Color Chase Off (Reference Color Macro Chart)
+7   31   31   31   31   001-100 RGBL Color Chase 1 Slow-Fast
+101-200 RGBL Color Chase 2 Slow-Fast
+201-255 RGBL Color Chase 3 Slow-Fast
+RGBL Shutter
+000-031 Shutter Closed (LEDs OFF)
+032-063 Shutter OPEN (LEDs ON)
+064-095 Strobe effect slow to fast
+8   32   32   32   32   096-127 Shutter OPEN (LEDs ON)
+128-159 Pulse effect in sequences
+160-191 Shutter OPEN (LEDs ON)
+192-223 Random strobe effect slow to fast
+224-255 Shutter OPEN (LEDs ON)
+9   33   33   33   33   000-255 RGBL Dimmer , 0-100% Dimmer
+–   34   34   34   34   000-255 RGBL Dimmer Fine , 16 Bit Dimming
+19
+
+=== DMXTRACT PAGE 21 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+31Ch   55Ch   57Ch   60Ch 237Ch VALUES
+19   45   45   45   –   000-255 All Ring Red , All Ring Red
+20   46   46   46   –   000-255 All Ring Green , All Ring Green
+21   47   47   47   –   000-255 All Ring Blue , All Ring Blue
+–   –   –   –   45   000-255 Ring Red 1 , Ring Red 1
+–   –   –   –   46   000-255 Ring Green 1 , Ring Green 1
+–   –   –   –   47   000-255 Ring Blue 1 , Ring Blue 1
+–   –   –   –   48   000-255 Ring Red 2 , Ring Red 2
+–   –   –   –   49   000-255 Ring Green 2 , Ring Green 2
+–   –   –   –   50   000-255 Ring Blue 2 , Ring Blue 2
+…   …   …   …   …   …   …
+–   –   –   –   222   000-255 Ring Red 60 , Ring Red 60
+–   –   –   –   223   000-255 Ring Green 60 , Ring Green 60
+–   –   –   –   224   000-255 Ring Blue 60 , Ring Blue 60
+Ring FX
+000-015 FX Effect close
+016-035 FX single led effect
+036-055 FX 3pcs leds effect
+056-075 FX 6pcs leds effect
+076-095 FX 12pcs leds effect
+096-115 FX 3pcs leds-4 modules effect
+22   48   48   48   225
+116-135 FX 6pcs leds-4 modules effect
+136-155 FX 4 modules effect
+156-175 FX loop fill effect
+176-195 RGB 3 colors rainbow effect
+196-215 RGB 3 colors effect
+216-235 FX rainbow effect
+236-255 FX segment effect
+23   49   49   49   226   000-255 Ring FX Speed , FX Speed
+Ring Shutter
+000-031 Shutter Closed (LEDs OFF)
+032-063 Shutter OPEN (LEDs ON)
+064-095 Strobe effect slow to fast
+24   50   50   50   227   096-127 Shutter OPEN (LEDs ON)
+128-159 Pulse effect in sequences
+160-191 Shutter OPEN (LEDs ON)
+192-223 Random strobe effect slow to fast
+224-255 Shutter OPEN (LEDs ON)
+25   51   51   51   228   000-255 Ring Dimmer , RGB Ring Dimmer
+26   52   52   52   229   000-255 Zoom , Min to Max (Narrow to Wide)
+Rotation Effect
+000-000 Rotation Effect Off
+001-127 Rotation Index
+27   53   53   53   230
+128-190 CW Fast to Slow
+191-192 Stop
+193-255 CCW Slow to Fast
+21
+
+=== DMXTRACT PAGE 22 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+31Ch   55Ch   57Ch   60Ch 237Ch VALUES
+Dim Modes
+000-020 Default to Unit Setting
+021-040 Standard
+041-060 Stage
+061-080 TV
+081-100 Architectural
+101-120 Theatre
+121-140 Stage 2
+Dimming Speed
+141   0.1 s
+142   0.2 s
+143   0.3 s
+144   0.4 s
+145   0.5 s
+146   0.6 s
+–   –   54   54   231
+147   0.7 s
+148   0.8 s
+149   0.9 s
+150   1 s
+151   1.5 s
+152   2 s
+153   3 s
+154   4 s
+155   5 s
+156   6 s
+157   7 s
+158   8 s
+159   9 s
+160   10 s
+55   55
+Dim Curves
+000-020 Square
+021-040 Linear
+–   –   55   55   232
+041-060 Inv. Squa
+061-080 S. Curve
+081-255 No Function
+Internal Progrms
+000-009 No Function
+010-019 Program 1
+020-029 Program 2
+030-039 Program 3
+28   –   –   56   233   040-049 Program 4
+050-059 Program 5
+060-069 Program 6
+070-079 Program 7
+080-089 Program 8
+90-255 No Function
+29   –   –   57   234   000-255 Internal Programs Speed , Slow → Fast
+30   –   –   58   235   000-255 Internal Programs Fade , Min → Max
+31   54   56   59   236   000-255 Pan/Tilt Speed , Fast → slow
+22
+''';
+
+/// Five of the nine DMX Traits pages of ADJ's Protégé XL manual (32, 37-40),
+/// verbatim from this app's PDF.js text pass with blank cells as "–".
+const _protegeXlTraitsExcerpt = r'''
+=== DMXTRACT PAGE 32 ===
+D M X T R A I T S
+MODE / CHANNELS
+VALUES   FUNCTION
+30ch   36ch   45ch
+Pan
+1   1   1
+000 - 255   Pan Movement, 540/630
+Pan Fine
+–   2   2
+000 - 255   Pan Fine Adjustment
+Tilt
+2   3   3
+000 - 255   Tilt Movement, 270
+Tilt Fine
+–   4   4
+000 - 255   Tilt Fine Adjustment
+Continuous Pan
+000 - 127   No Function
+3   5   5   128 - 190   Clockwise Rotation, slow to fast
+191 - 192   Stop
+193 - 255   Counter-clockwise Rotation, fast to slow
+Cyan
+4   6   6
+000 - 255   0% to 100%
+Cyan Fine
+–   –   7
+000 - 255   0% to 100%
+Magenta
+5   7   8
+000 - 255   0% to 100%
+Magenta Fine
+–   –   9
+000 - 255   0% to 100%
+Yellow
+6   8   10
+000 - 255   0% to 100%
+Yellow Fine
+–   –   11
+000 - 255   0% to 100%
+CTO
+7   9   12
+000 - 255   0% to 100%
+CTO Fine
+–   –   13
+000 - 255   0% to 100%
+White Color Temp Presets
+000 - 023   Standard (7500K)
+8   10   14
+024 - 071   See WCT Preset Chart
+072 - 255   7500K
+Color Wheel
+000 - 008   Open
+009 - 017   Open / Red
+018 - 026   Red
+9   11   15   027 - 035   Red / Blue
+036 - 044   Blue
+045 - 053   Blue / Green
+054 - 062   Green
+063 - 071   Green / Orange
+32
+
+=== DMXTRACT PAGE 37 ===
+D M X T R A I T S
+MODE / CHANNELS
+VALUES   FUNCTION
+30ch   36ch   45ch
+Zoom
+22   27   35
+000 - 255   Narrow to Wide
+Zoom Fine
+–   –   36
+000 - 255   Narrow to Wide, 16-bit
+Medium Frost
+23   28   37
+000 - 255   0% to 100%
+Heavy Frost
+24   29   38
+000 - 255   0% to 100%
+Animation
+000 - 019   No Function
+020 - 127   Enter in Proportion
+25   30   39
+128 - 170   All on - All in - All out, fast to slow
+171 - 213   Half open - Full access - Half open, fast to slow
+214 - 255   Half open - All out - Half open, fast to slow
+Animation Rotation
+000   No Function
+26   31   40   001 - 127   Clockwise, fast to slow
+128   Stop
+129 - 255   Counter-clockwise, slow to fast
+Dimmer Mode
+000 - 020   Default to Unit Setting
+021 - 040   Standard
+041 - 060   Stage
+061 - 080   TV
+27   32   41
+081 - 100   Architectural
+101 - 120   Theater
+121 - 140   Stage 2
+141 - 160   Dim Speed, fast to slow (0.1s - 10s)
+161 - 255   Default to Unit Setting
+Dim Curves
+000 - 020   No Function
+021 - 040   Linear
+–   33   42   041 - 060   Square
+061 - 080   Inv. Squa
+081 - 100   S. Curve
+101 - 255   No Function
+CMY and Color Macro Speed
+28   34   43
+000 - 255   Maximum to minimum
+37
+
+=== DMXTRACT PAGE 38 ===
+D M X T R A I T S
+MODE / CHANNELS
+VALUES   FUNCTION
+30ch   36ch   45ch
+Pan/Tilt Speed
+000 - 225   Pan/Tilt, fast to slow
+29   35   44   226 - 235   Blackout by movement
+236 - 245   Blackout by all wheel changing
+246 - 255   No Function
+Special Functions
+000 - 029   No Function
+030 - 039   Fan Control - Mute (hold 3s)
+040 - 049   Fan Control - Low (hold 3s)
+050 - 059   Fan Control - High (hold 3s)
+060 - 069   Fan Control - Auto (hold 3s)
+070 - 074   All Motor Reset
+075 - 079   Pan/Tilt Reset
+080 - 084   CMY Reset
+085 - 089   No Function
+090 - 094   Effect Reset 1 (Color, Gobo, Animation)
+095 - 099   Effect Reset 2 (Prism, Frost, Focus, Zoom)
+100 - 142   No Function
+143 - 144   Pan/Tilt Speed Standard (hold 3s)
+145 - 146   Pan/Tilt Speed Fast (hold 3s)
+147 - 148   No Function
+149 - 150   Aria On (hold 3s)
+151 - 152   Aria Off (hold 3s)
+30   36   45
+153 - 154   Hibernation Enable (hold 3s)
+155 - 156   Hibernation Off (hold 3s)
+157 - 158   Display Backlight On (hold 3s)
+159 - 160   Display Backlight Off (hold 3s)
+161 - 164   No Function
+165 - 166   Invert Pan On (hold 3s)
+167 - 168   Invert Pan Off (hold 3s)
+169 - 170   Invert Tilt On (hold 3s)
+171 - 172   Invert Tilt Off (hold 3s)
+LED Refresh Rate (Hz)
+173   900
+174   910
+175   920
+176   930
+177   940
+178   950
+179   960
+180   970
+38
+
+=== DMXTRACT PAGE 39 ===
+D M X T R A I T S
+MODE / CHANNELS
+VALUES   FUNCTION
+30ch   36ch   45ch
+LED Refresh Rate (Hz) (continued)
+181   980
+182   990
+183   1000
+184   1010
+185   1020
+186   1030
+187   1040
+188   1050
+189   1060
+190   1070
+191   1080
+192   1090
+193   1100
+194   1110
+195   1120
+196   1130
+197   1140
+198   1150
+199   1160
+200   1170
+30   36   45
+201   1180
+202   1190
+203   1200
+204   1210
+205   1220
+206   1230
+207   1240
+208   1250
+209   1260
+210   1270
+211   1280
+212   1290
+213   1300
+214   1310
+215   1320
+216   1330
+217   1340
+218   1350
+219   1360
+220   1370
+221   1380
+39
+
+=== DMXTRACT PAGE 40 ===
+D M X T R A I T S
+MODE / CHANNELS
+VALUES   FUNCTION
+30ch   36ch   45ch
+LED Refresh Rate (Hz) (continued)
+222   1390
+223   1400
+224   1410
+225   1420
+226   1430
+227   1440
+228   1450
+229   1460
+230   1470
+231   1480
+232   1490
+233   1500
+234   2500
+235   4000
+236   5000
+30   36   45   237   6000
+238   10,000
+239   15,000
+240   20,000
+241   25,000
+Internal Programs
+242   Internal Program 1
+243   Internal Program 2
+244   Internal Program 3
+245   Internal Program 4
+246   Internal Program 5
+247   Internal Program 6
+248   Internal Program 7
+249   Internal Programs Off
+CT Mode
+250 - 252   Enable CT Mode
+253 - 255   Disable CT Mode
+40
+''';
+
+/// The three DMX Traits pages of ADJ's Encore LP12Z IP manual, verbatim from
+/// this app's PDF.js text pass with blank cells as "–".
+const _encoreLp12zTraitsExcerpt = r'''
+=== DMXTRACT PAGE 27 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+6Ch 9Ch 10Ch 12Ch 15Ch 16Ch VALUES
+1   1   1   1   1   1   000 - 255 Red, 0% to 100%
+–   –   2   –   –   –   000 - 255 Red Fine
+2   2   3   2   2   2   000 - 255 Green, 0% to 100%
+–   –   4   –   –   –   000 - 255 Green Fine
+3   3   5   3   3   3   000 - 255 Blue, 0% to 100%
+–   –   6   –   –   –   000 - 255 Blue Fine
+4   4   7   4   4   4   000 - 255 Lime, 0% to 100%
+–   –   8   –   –   –   000 - 255 Lime Fine
+Color Macros, see Color Macros Chart section
+–   –   –   5   5   5   000 - 255
+of this manual
+–   –   –   6   6   6   000 - 255 Color Temperature, 2700K - 7000K Linear
+Color Temperature Macros
+000   Off
+001 - 054 2700K
+–   –   –   7   7   7   055 - 109 3200K
+110 - 164 4000K
+165 - 219 5600K
+220 - 255 6500K
+Shutter, Strobe
+000 - 031 LEDs Off
+032 - 063 LEDs On
+064 - 095 Strobe Effect, slow to fast
+–   5   –   8   8   8   096 - 127 LEDs On
+128 - 159 Pulse Effect in Sequences
+160 - 191 LEDs On
+192 - 223 Random Strobe Effect, slow to fast
+224 - 255 LEDs On
+–   6   –   9   9   9   000 - 255 Dimmer Intensity, 0% to 100%
+–   7   –   10   10   10   000 - 255 Dimmer Fine
+Zoom Linear, minimum to maximum beam
+5   8   9   11   11   11   000 - 255
+angle
+Zoom Presets
+000 - 020 Normal (5 ° )
+021 - 040 Very Narrow Spot (6 ° )
+6   9   10   12   12   12   041 - 060 Narrow (10 ° )
+061 - 080 Medium Flood (30 ° )
+081 - 100 Wide Flood (40 ° )
+101 - 255 Very Wide Flood (50 ° )
+27
+
+=== DMXTRACT PAGE 28 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+6Ch 9Ch 10Ch 12Ch 15Ch 18Ch VALUES
+Auto Programs
+000 - 031 Off
+032 - 063 Auto Program 1
+064 - 095 Auto Program 2
+–   –   –   –   –   13   096 - 127 Auto Program 3
+128 - 159 Auto Program 4
+160 - 191 Auto Program 5
+192 - 223 Auto Program 6
+224 - 255 Auto Program 7
+–   –   –   –   –   14   000 - 255 Auto Programs Speed, slow to fast
+Auto Programs Fade, minimum to maximum
+–   –   –   –   –   15   000 - 255
+fade
+Dim Mode
+000 - 020 Default to unit setting
+021 - 040 Standard
+041 - 060 Stage
+061 - 080 TV
+–   –   –   –   13   16
+081 - 100 Architectural
+101 - 120 Theatre
+121 - 140 Stage 2
+141 - 160 Dim Speed, fast to slow (0.1s - 10s)
+161 - 255 Default to unit setting
+Dim Curves
+000 - 020 Square
+021 - 040 Linear
+–   –   –   –   14   17
+041 - 060 Inv Squa
+061 - 080 S Curve
+081 - 255 No function
+Special Functions
+000 - 015 Default to unit setting
+016 - 030 900 Hz
+031 - 045 1000 Hz
+046 - 060 1100 Hz
+–   –   –   –   15   18   061 - 075 1200 Hz
+076 - 090 1300 Hz
+091 - 105 1400 Hz
+106 - 120 1500 Hz
+121 - 135 2500 Hz
+136 - 150 4000 Hz
+28
+
+=== DMXTRACT PAGE 29 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+6Ch 9Ch 10Ch 12Ch 15Ch 18Ch VALUES
+Special Functions (continued)
+151 - 165 5000 Hz
+166 - 180 10000 Hz
+181 - 195 15000 Hz
+196 - 210 20000 Hz
+–   –   –   –   15   18
+211 - 225 25000 Hz
+226 - 229 Enable Zoom Mode 1 (hold 3s)
+230 - 233 Enable Zoom Mode 2 (hold 3s)
+234 - 238 Zoom Reset
+239 - 255 No function
+29
+''';
+
+/// Two of the seven DMX Traits pages of the Eliminator Fantasy FX manual (18,
+/// 19), verbatim from this app's PDF.js text pass with blank cells as "–".
+const _fantasyFxTraitsExcerpt = r'''
+=== DMXTRACT PAGE 18 ===
+D M X T R A I T S
+Features subject to change without notice
+MODE/CHANNELS
+VALUES   FUNCTION
+7ch   16ch 152ch
+Main Red
+1   1   1
+000 - 255   0% - 100%
+Main Green
+2   2   2
+000 - 255   0% - 100%
+Main Blue
+3   3   3
+000 - 255   0% - 100%
+Main White
+4   4   4
+000 - 255   0% - 100%
+Main Shutter
+000 - 031   Shutter Closed (LEDs Off)
+032 - 063   Shutter Open (LEDs On)
+064 - 095   Strobe Effect, slow to fast
+–   5   5   096 - 127   Shutter Open (LEDs On)
+128 - 159   Pulse Effect in Sequences
+160 - 191   Shutter Open (LEDs On)
+192 - 223   Random Strobe Effect, slow to fast
+224 - 255   Shutter Open (LEDs On)
+Main Dimmer
+–   6   6
+000 - 255   0% - 100%
+Background Red All
+5   7   –
+000 - 255   0% - 100%
+Background Green All
+6   8   –
+000 - 255   0% - 100%
+Background Blue All
+7   9   –
+000 - 255   0% - 100%
+Background 1 Red
+–   –   7
+000 - 255   0% - 100%
+Background 1 Green
+–   –   8
+000 - 255   0% - 100%
+Background 1 Blue
+–   –   9
+000 - 255   0% - 100%
+...   ...   ...   ...   ...
+Background 48 Red
+–   –   148
+000 - 255   0% - 100%
+Background 48 Green
+–   –   149
+000 - 255   0% - 100%
+18
+
+=== DMXTRACT PAGE 19 ===
+D M X T R A I T S
+Features subject to change without notice
+MODE/CHANNELS
+VALUES   FUNCTION
+7ch   16ch 152ch
+Background 48 Blue
+–   –   150
+000 - 255   0% - 100%
+Background Shutter
+000 - 031   Shutter Closed (LEDs Off)
+032 - 063   Shutter Open (LEDs On)
+064 - 095   Strobe Effect, slow to fast
+–   10   151   096 - 127   Shutter Open (LEDs On)
+128 - 159   Pulse Effect in Sequences
+160 - 191   Shutter Open (LEDs On)
+192 - 223   Random Strobe Effect, slow to fast
+224 - 255   Shutter Open (LEDs On)
+Background Dimmer
+–   11   152
+000 - 255   0% - 100%
+64 Color Macros
+–   12   –
+000 - 255   See Color Macros Chart
+Inner Programs
+000 - 005   Program 0
+006 - 010   Program 1
+011 - 015   Program 2
+016 - 021   Program 3
+022 - 026   Program 4
+027 - 031   Program 5
+032 - 037   Program 6
+038 - 042   Program 7
+043 - 047   Program 8
+–   13   –   048 - 053   Program 9
+054 - 058   Program 10
+059 - 063   Program 11
+064 - 069   Program 12
+070 - 074   Program 13
+075 - 079   Program 14
+080 - 085   Program 15
+086 - 090   Program 16
+091 - 095   Program 17
+096 - 101   Program 18
+102 - 106   Program 19
+19
+''';
+
+/// The first DMX Traits page of the ADJ COB Cannon LP200X manual (21),
+/// verbatim from this app's PDF.js text pass with blank cells as "–".
+const _cobCannonTraitsExcerpt = r'''
+=== DMXTRACT PAGE 21 ===
+D M X T R A I T S
+DMX
+5Ch 8Ch-A 8Ch-B 9Ch 10Ch-A 10Ch-B 12Ch 13Ch 16Ch 20Ch   FUNCTION
+VALUES
+Red
+1   1   –   1   1   1   1   1   1   1   0-255
+0~100%
+–   –   –   –   2   –   –   –   –   2   0-255 Red Fine 16-bit
+Green
+2   2   –   2   3   2   2   2   2   3   0-255
+0~100%
+–   –   –   –   4   –   –   –   –   4   0-255 Green Fine 16-bit
+Blue
+3   3   –   3   5   3   3   3   3   5   0-255
+0~100%
+–   –   –   –   6   –   –   –   –   6   0-255 Blue 1 Fine 16-bit
+Amber
+4   4   –   4   7   4   4   4   4   7   0-255
+1~100%
+–   –   –   –   8   –   –   –   –   8   0-255 Amber Fine 16-bit
+Lime
+5   5   –   5   9   5   5   5   5   9   0-255
+0~100%
+–   –   –   –   10   –   –   –   –   10   0-255 Lime Fine 16-bit
+Color Macros
+–   –   1   –   –   6   6   6   6   11   0-255
+(See Color Macros)
+Color Temperature
+–   –   2   6   –   7   –   7   7   12   0-255
+2300-9900K Linear , 0~100%
+Shutter, Strobe
+0-31 LEDs Off
+32-63 LEDs On
+64-95 Strobe effect, slow to fast
+–   6   3   7   –   8   7   8   8   13   96-127 LEDs On
+128-159 Pulse effect in sequences
+160-191 LEDs On
+192-223 Random strobe effect, slow to fast
+224-255 LEDs On
+Dimmer (Intensity)
+–   7   4   8   –   9   8   9   9   14   0-255
+Intensity, 0 to 100%
+–   8   5   9   –   10   9   10   10   –   0-255 Dimmer Fine 16-bit
+Auto programs:
+0-10 Off
+11-26 Auto Program 1
+27-43 Auto Program 2
+44-60 Auto Program 3
+61-76 Auto Program 4
+77-93 Auto Program 5
+94-110 Auto Program 6
+–   –   –   –   –   –   10   –   11   15
+111-126 Auto Program 7
+127-143 Auto Program 8
+144-160 Auto Program 9
+161-176 Auto Program 10
+177-193 Auto Program 11
+194-210 Auto Program 12
+211-226 Auto Program 13
+227-255 No Function
+Auto Programs Speed:
+–   –   –   –   –   –   11   –   12   166   0-255
+Slow to Fast speed
+Auto Programs Fade:
+–   –   –   –   –   –   12   –   13   17   0-255
+Less to More
+–   –   –   –   –   –   –   21   –   –
+''';
+
+/// The first DMX Traits page of the ADJ Mirage Par H IP manual (27), verbatim
+/// from this app's PDF.js text pass with blank cells as "–".
+const _mirageParHTraitsExcerpt = r'''
+=== DMXTRACT PAGE 27 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+5Ch   6Ch   9Ch A 9Ch B   15 Ch   17 Ch VALUES
+Red
+–   1   1   –   1   1
+0 - 255 0 - 100%
+Green
+–   2   2   –   2   2
+0 - 255 0 - 100%
+Blue
+–   3   3   –   3   3
+0 - 255 0 - 100%
+Amber
+–   4   4   –   4   4
+0 - 255 0 - 100%
+Lime
+–   5   5   –   5   5
+0 - 255 0 - 100%
+UV
+–   6   6   –   6   6
+0 - 255 0 - 100%
+Colors Macros
+–   –   7   1   7   7
+0 - 255 Refer to Color Macros Chart
+Color Temperature
+1   –   8   2   8   8
+0 - 255 2300K - 9900K Linear
+White Color Temperature Presets
+0 - 22 Open
+2   –   9   3   9   9   White Color Temperature Presets,
+23 - 99
+refer to Color Temperature Chart
+100 - 255 No Function
+Shutter
+0 - 31 LEDs Off
+32 - 63 LEDs On
+64 - 95 Strobe effect, slow to fast
+3   –   –   4   10   10   96 - 127 LEDs On
+128 - 159 Pulse Effect in sequences
+160 - 191 LEDs On
+192 - 223 Random Strobe Effect, slow to fast
+224 - 255 LEDs On
+Dimmer
+4   –   –   5   11   11
+0 - 255 Intensity, 0 - 100%
+Dimmer Fine
+5   –   –   6   12   12
+0 - 255 Dimmer fine adjustment
+Internal Programs
+0 - 10 Off
+11 - 26 Auto Program 1
+27 - 43 Auto Program 2
+44 - 60 Auto Program 3
+61 - 76 Auto Program 4
+77 - 93 Auto Program 5
+94 - 110 Auto Program 6
+–   –   –   7   13   13
+111 - 126 Auto Program 7
+127 - 143 Auto Program 8
+144 - 160 Auto Program 9
+161 - 176 Auto Program 10
+177 - 193 Auto Program 11
+194 - 210 Auto Program 12
+211 - 226 Auto Program 13
+227 - 255 No Function
+–   –   –   –   –   27
+''';
+
+/// Two of the DMX Traits pages of the ADJ ElectraPix Bar 16 manual (33, 34),
+/// verbatim from this app's PDF.js text pass with blank cells as "–".
+const _electraPixBar16TraitsExcerpt = r'''
+=== DMXTRACT PAGE 33 ===
+D M X T R A I T S
+CHANNEL
+DMX
+5   6   7   9   12 13 22 24 96 99 114   FUNCTION
+VALUES
+CH CH CH CH CH CH CH CH CH CH CH
+–   1   1   1   1   –   1   1   –   –   –   0-255 All Red , 0~100%
+–   2   2   2   2   –   2   2   –   –   –   0-255 All Green , 0~100%
+–   3   3   3   3   –   3   3   –   –   –   0-255 All Blue , 0~100%
+–   4   4   4   4   –   4   4   –   –   –   0-255 All Amber , 0~100%
+–   5   5   5   5   –   5   5   –   –   –   0-255 All Lime , 0~100%
+–   6   6   6   6   –   6   6   –   –   –   0-255 All UV , 0~100%
+–   –   –   –   –   –   –   –   1   1   1   0-255 Red1 , 0~100%
+–   –   –   –   –   –   –   –   2   2   2   0-255 Green 1 , 0~100%
+–   –   –   –   –   –   –   –   3   3   3   0-255 Blue 1 , 0~100%
+–   –   –   –   –   –   –   –   4   4   4   0-255 Amber 1 , 0~100%
+–   –   –   –   –   –   –   –   5   5   5   0-255 Lime 1 , 0~100%
+–   –   –   –   –   –   –   –   6   6   6   0-255 UV 1 , 0~100%
+..   ...   ...   0-255 ...
+–   –   –   –   –   –   –   –   91   91   91   0-255 Red 16 , 0~100%
+–   –   –   –   –   –   –   –   92   92   92   0-255 Green 16 , 0~100%
+–   –   –   –   –   –   –   –   93   93   93   0-255 Blue 16 , 0~100%
+–   –   –   –   –   –   –   –   94   94   94   0-255 Amber 16 , 0~100%
+–   –   –   –   –   –   –   –   95   95   95   0-255 Lime 16 , 0~100%
+–   –   –   –   –   –   –   –   96   96   96   0-255 UV 16 , 0~100%
+–   –   –   –   –   1   7   7   –   –   97   0-255 RGBAL+UV Color Macros
+–   –   –   7   7   –   8   8   –   97   98   0-255 Background Red , 0~100%
+–   –   –   8   8   –   9   9   –   98   99   0-255 Background Green , 0~100%
+–   –   –   9   9   –   10   10   –   99   100   0-255 Background Blue , 0~100%
+–   –   –   –   –   2   11   11   –   –   101   0-255 RGB Background Color Macros
+Color Temperature 2300-9900K
+1   –   –   –   10   3   12   12   –   –   102   0-255
+Linear , 0~100%
+White Color Temperature Presets
+0-22 Open
+2   –   –   –   –   4   13   13   –   –   103
+23-99 See WCT Preset Chart
+100-255 No Function
+Shutter, Strobe
+0-31 Led’s Off
+32-63 Led’s On
+64-95 Strobe effect slow to fast
+3   –   –   –   11   5   14   14   –   –   104   96-127 Led’s On
+128-159 Pulse-effect in sequences
+160-191 Led’s On
+192-223 Random strobe effect slow to fast
+224-255 Led’s On
+4   –   7   –   12   6   15   15   –   –   105   0-255 Dimmer (Intensity) , Intensity 0~100%
+5   –   –   –   –   7   16   16   –   –   106   0-255 Dimmer Fine (Intensity)
+–   –   –   –   –   –   –   –   –   33   –
+
+
+=== DMXTRACT PAGE 34 ===
+D M X T R A I T S
+CHANNEL
+DMX
+5   6   7   9   12 13 22 24 96 99 114   FUNCTION
+VALUES
+CH CH CH CH CH CH CH CH CH CH CH
+RGBAL+UV programs:
+0-10 Off
+11-26 Auto Program 1
+27-43 Auto Program 2
+44-60 Auto Program 3
+61-76 Auto Program 4
+77-93 Auto Program 5
+94-110 Auto Program 6
+–   –   –   –   –   8   17   17   –   –   107
+111-126 Auto Program 7
+127-143 Auto Program 8
+144-160 Auto Program 9
+161-176 Auto Program 10
+177-193 Auto Program 11
+194-210 Auto Program 12
+211-226 Auto Program 13
+227-255 No Function
+RGBAL+UV Programs Speed : Slow to
+–   –   –   –   –   9   18   18   –   –   108   0-255
+Fast speed
+RGBAL+UV Programs Fade : Less to
+–   –   –   –   –   10   19   19   –   –   109   0-255
+More
+RGB Background Programs:
+0-10 Off
+11-26 Auto Program 1
+27-43 Auto Program 2
+44-60 Auto Program 3
+61-76 Auto Program 4
+77-93 Auto Program 5
+94-110 Auto Program 6
+–   –   –   –   –   11   20   20   –   –   110
+111-126 Auto Program 7
+127-143 Auto Program 8
+144-160 Auto Program 9
+161-176 Auto Program 10
+177-193 Auto Program 11
+194-210 Auto Program 12
+211-226 Auto Program 13
+227-255 No Function
+RGB Background Programs Speed : Slow
+–   –   –   –   –   12   21   21   –   –   111   0-255
+to Fast speed
+RGB Background Programs Fade : Less
+–   –   –   –   –   13   22   22   –   –   112   0-255
+to More
+–   –   –   –   –   –   –   –   –   34   –
+''';
+
+/// The six DMX Traits pages of the ADJ Jolt Panel FX2 manual (21-26),
+/// verbatim from this app's PDF.js text pass with blank cells as "–".
+const _joltPanelFx2TraitsExcerpt = r'''
+=== DMXTRACT PAGE 21 ===
+D M X T R A I T S
+CHANNEL
+DMX
+6   9   13 18 20 36 41 43 51 81 83 126 141 143   FUNCTION
+VALUES
+CH CH CH CH CH CH CH CH CH CH CH CH CH CH
+1   1   1   1   1   –   –   –   –   –   –   –   –   –   000-255 Outer Red, 0 to 100%
+Outer Green, 0 to
+2   2   2   2   2   –   –   –   –   –   –   –   –   –   000-255
+100%
+3   3   3   3   3   –   –   –   –   –   –   –   –   –   000-255 Outer Blue, 0 to 100%
+Inner White, 0 to
+4   4   4   –   –   –   –   –   –   –   –   –   –   –   000-255
+100%
+5   5   6   –   –   –   –   –   –   –   –   –   –   –   000-255 Dimmer, 0 to 100%
+Dimmer Fine, 0 to
+6   6   7   –   –   –   –   –   –   –   –   –   –   –   000-255
+100%
+Strobe Effect
+000-002 Open
+003-005 Strobe
+006-050 Ramp up
+–   7   –   –   –   –   –   –   –   –   –   –   –   –
+051-100 Ramp down
+101-150 Ramp up-down
+151-200 Lightning
+201-255 Random
+Strobe Rate
+–   8   –   –   –   –   –   –   –   –   –   –   –   –
+000-255 Speed, slow to fast
+Strobe Duration
+–   9   –   –   –   –   –   –   –   –   –   –   –   –
+000-255 Duration, slow to fast
+–   –   –   –   –   1   1   1   1   1   1   1   1   1   000-255 Red 1
+–   –   –   –   –   2   2   2   2   2   2   2   2   2   000-255 Green 1
+–   –   –   –   –   3   3   3   3   3   3   3   3   3   000-255 Blue 1
+–   –   –   –   –   4   4   4   4   4   4   4   4   4   000-255 Red 2
+–   –   –   –   –   5   5   5   5   5   5   5   5   5   000-255 Green 2
+–   –   –   –   –   6   6   6   6   6   6   6   6   6   000-255 Blue 2
+–   –   –   –   –   7   7   7   7   7   7   7   7   7   000-255 Red 3
+–   –   –   –   –   8   8   8   8   8   8   8   8   8   000-255 Green 3
+–   –   –   –   –   9   9   9   9   9   9   9   9   9   000-255 Blue 3
+–   –   –   –   –   10   10   10   10   10   10   10   10   10   000-255 Red 4
+–   –   –   –   –   11   11   11   11   11   11   11   11   11   000-255 Green 4
+–   –   –   –   –   12   12   12   12   12   12   12   12   12   000-255 Blue 4
+–   –   –   –   –   13   13   13   13   13   13   13   13   13   000-255 Red 5
+–   –   –   –   –   14   14   14   14   14   14   14   14   14   000-255 Green 5
+–   –   –   –   –   15   15   15   15   15   15   15   15   15   000-255 Blue 5
+–   –   –   –   –   16   16   16   16   16   16   16   16   16   000-255 Red 6
+–   –   –   –   –   17   17   17   17   17   17   17   17   17   000-255 Green 6
+–   –   –   –   –   18   18   18   18   18   18   18   18   18   000-255 Blue 6
+–   –   –   –   –   19   19   19   19   19   19   19   19   19   000-255 Red 7
+–   –   –   –   –   20   20   20   20   20   20   20   20   20   000-255 Green 7
+–   –   –   –   –   21   21   21   21   21   21   21   21   21   000-255 Blue 7
+–   –   –   –   –   22   22   22   22   22   22   22   22   22   000-255 Red 8
+–   –   –   –   –   23   23   23   23   23   23   23   23   23   000-255 Green 8
+–   –   –   –   –   24   24   24   24   24   24   24   24   24   000-255 Blue 8
+–   –   –   –   –   –   –   –   25   25   25   25   25   25   000-255 Red 9
+–   –   –   –   –   –   –   –   26   26   26   26   26   26   000-255 Green 9
+–   –   –   –   –   –   –   –   27   27   27   27   27   27   000-255 Blue 9
+–   –   –   –   –   –   –   –   28   28   28   28   28   28   000-255 Red 10
+–   –   –   –   –   –   –   –   29   29   29   29   29   29   000-255 Green 10
+–   –   –   –   –   –   –   –   30   30   30   30   30   30   000-255 Blue 10
+21
+
+
+=== DMXTRACT PAGE 22 ===
+D M X T R A I T S
+CHANNEL
+DMX
+6   9   13 18 20 36 41 43 51 81 83 126 141 143 VALUES   FUNCTION
+CH CH CH CH CH CH CH CH CH CH CH CH CH CH
+–   –   –   –   –   –   –   –   –   31   31   31   31   31   000-255 Red 11
+–   –   –   –   –   –   –   –   –   32   32   32   32   32   000-255 Green 11
+–   –   –   –   –   –   –   –   –   33   33   33   33   33   000-255 Blue 11
+–   –   –   –   –   –   –   –   –   34   34   34   34   34   000-255 Red 12
+–   –   –   –   –   –   –   –   –   35   35   35   35   35   000-255 Green 12
+–   –   –   –   –   –   –   –   –   36   36   36   36   36   000-255 Blue 12
+–   –   –   –   –   –   –   –   –   37   37   37   37   37   000-255 Red 13
+–   –   –   –   –   –   –   –   –   38   38   38   38   38   000-255 Green 13
+–   –   –   –   –   –   –   –   –   39   39   39   39   39   000-255 Blue 13
+–   –   –   –   –   –   –   –   –   40   40   40   40   40   000-255 Red 14
+–   –   –   –   –   –   –   –   –   41   41   41   41   41   000-255 Green 14
+–   –   –   –   –   –   –   –   –   42   42   42   42   42   000-255 Blue 14
+–   –   –   –   –   –   –   –   –   43   43   43   43   43   000-255 Red 15
+–   –   –   –   –   –   –   –   –   44   44   44   44   44   000-255 Green 15
+–   –   –   –   –   –   –   –   –   45   45   45   45   45   000-255 Blue 15
+–   –   –   –   –   –   –   –   –   46   46   46   46   46   000-255 Red 16
+–   –   –   –   –   –   –   –   –   47   47   47   47   47   000-255 Green 16
+–   –   –   –   –   –   –   –   –   48   48   48   48   48   000-255 Blue 16
+–   –   –   –   –   –   –   –   –   49   49   49   49   49   000-255 Red 17
+–   –   –   –   –   –   –   –   –   50   50   50   50   50   000-255 Green 17
+–   –   –   –   –   –   –   –   –   51   51   51   51   51   000-255 Blue 17
+–   –   –   –   –   –   –   –   –   52   52   52   52   52   000-255 Red 18
+–   –   –   –   –   –   –   –   –   53   53   53   53   53   000-255 Green 18
+–   –   –   –   –   –   –   –   –   54   54   54   54   54   000-255 Blue 18
+–   –   –   –   –   –   –   –   –   55   55   55   55   55   000-255 Red 19
+–   –   –   –   –   –   –   –   –   56   56   56   56   56   000-255 Green 19
+–   –   –   –   –   –   –   –   –   57   57   57   57   57   000-255 Blue 19
+–   –   –   –   –   –   –   –   –   58   58   58   58   58   000-255 Red 20
+–   –   –   –   –   –   –   –   –   59   59   59   59   59   000-255 Green 20
+–   –   –   –   –   –   –   –   –   60   60   60   60   60   000-255 Blue 20
+–   –   –   –   –   –   –   –   –   –   –   61   61   61   000-255 Red 21
+–   –   –   –   –   –   –   –   –   –   –   62   62   62   000-255 Green 21
+–   –   –   –   –   –   –   –   –   –   –   63   63   63   000-255 Blue 21
+–   –   –   –   –   –   –   –   –   –   –   64   64   64   000-255 Red 22
+–   –   –   –   –   –   –   –   –   –   –   65   65   65   000-255 Green 22
+–   –   –   –   –   –   –   –   –   –   –   66   66   66   000-255 Blue 22
+–   –   –   –   –   –   –   –   –   –   –   67   67   67   000-255 Red 23
+–   –   –   –   –   –   –   –   –   –   –   68   68   68   000-255 Green 23
+–   –   –   –   –   –   –   –   –   –   –   69   69   69   000-255 Blue 23
+–   –   –   –   –   –   –   –   –   –   –   70   70   70   000-255 Red 24
+–   –   –   –   –   –   –   –   –   –   –   71   71   71   000-255 Green 24
+–   –   –   –   –   –   –   –   –   –   –   72   72   72   000-255 Blue 24
+–   –   –   –   –   –   –   –   –   –   –   73   73   73   000-255 Red 25
+–   –   –   –   –   –   –   –   –   –   –   74   74   74   000-255 Green 25
+–   –   –   –   –   –   –   –   –   –   –   75   75   75   000-255 Blue 25
+22
+
+
+=== DMXTRACT PAGE 23 ===
+D M X T R A I T S
+CHANNEL
+DMX
+6   9   13 18 20 36 41 43 51 81 83 126 141 143 VALUES   FUNCTION
+CH CH CH CH CH CH CH CH CH CH CH CH CH CH
+–   –   –   –   –   –   –   –   –   –   –   76   76   76   000-255 Red 26
+–   –   –   –   –   –   –   –   –   –   –   77   77   77   000-255 Green 26
+–   –   –   –   –   –   –   –   –   –   –   78   78   78   000-255 Blue 26
+–   –   –   –   –   –   –   –   –   –   –   79   79   79   000-255 Red 27
+–   –   –   –   –   –   –   –   –   –   –   80   80   80   000-255 Green 27
+–   –   –   –   –   –   –   –   –   –   –   81   81   81   000-255 Blue 27
+–   –   –   –   –   –   –   –   –   –   –   82   82   82   000-255 Red 28
+–   –   –   –   –   –   –   –   –   –   –   83   83   83   000-255 Green 28
+–   –   –   –   –   –   –   –   –   –   –   84   84   84   000-255 Blue 28
+–   –   –   –   –   –   –   –   –   –   –   85   85   85   000-255 Red 29
+–   –   –   –   –   –   –   –   –   –   –   86   86   86   000-255 Green 29
+–   –   –   –   –   –   –   –   –   –   –   87   87   87   000-255 Blue 29
+–   –   –   –   –   –   –   –   –   –   –   88   88   88   000-255 Red 30
+–   –   –   –   –   –   –   –   –   –   –   89   89   89   000-255 Green 30
+–   –   –   –   –   –   –   –   –   –   –   90   90   90   000-255 Blue 30
+–   –   –   –   –   –   –   –   –   –   –   91   91   91   000-255 Red 31
+–   –   –   –   –   –   –   –   –   –   –   92   92   92   000-255 Green 31
+–   –   –   –   –   –   –   –   –   –   –   93   93   93   000-255 Blue 31
+–   –   –   –   –   –   –   –   –   –   –   94   94   94   000-255 Red 32
+–   –   –   –   –   –   –   –   –   –   –   95   95   95   000-255 Green 32
+–   –   –   –   –   –   –   –   –   –   –   96   96   96   000-255 Blue 32
+–   –   –   –   –   –   –   –   –   –   –   97   97   97   000-255 Red 33
+–   –   –   –   –   –   –   –   –   –   –   98   98   98   000-255 Green 33
+–   –   –   –   –   –   –   –   –   –   –   99   99   99   000-255 Blue 33
+–   –   –   –   –   –   –   –   –   –   –   100   100   100   000-255 Red 34
+–   –   –   –   –   –   –   –   –   –   –   101   101   101   000-255 Green 34
+–   –   –   –   –   –   –   –   –   –   –   102   102   102   000-255 Blue 34
+–   –   –   –   –   –   –   –   –   –   –   103   103   103   000-255 Red 35
+–   –   –   –   –   –   –   –   –   –   –   104   104   104   000-255 Green 35
+–   –   –   –   –   –   –   –   –   –   –   105   105   105   000-255 Blue 35
+–   –   –   –   –   –   –   –   –   –   –   106   106   106   000-255 Red 36
+–   –   –   –   –   –   –   –   –   –   –   107   107   107   000-255 Green 36
+–   –   –   –   –   –   –   –   –   –   –   108   108   108   000-255 Blue 36
+–   –   –   –   –   –   –   –   –   –   –   109   109   109   000-255 Red 37
+–   –   –   –   –   –   –   –   –   –   –   110   110   110   000-255 Green 37
+–   –   –   –   –   –   –   –   –   –   –   111   111   111   000-255 Blue 37
+–   –   –   –   –   –   –   –   –   –   –   112   112   112   000-255 Red 38
+–   –   –   –   –   –   –   –   –   –   –   113   113   113   000-255 Green 38
+–   –   –   –   –   –   –   –   –   –   –   114   114   114   000-255 Blue 38
+–   –   –   –   –   –   –   –   –   –   –   115   115   115   000-255 Red 39
+–   –   –   –   –   –   –   –   –   –   –   116   116   116   000-255 Green 39
+–   –   –   –   –   –   –   –   –   –   –   117   117   117   000-255 Blue 39
+–   –   –   –   –   –   –   –   –   –   –   118   118   118   000-255 Red 40
+–   –   –   –   –   –   –   –   –   –   –   119   119   119   000-255 Green 40
+–   –   –   –   –   –   –   –   –   –   –   120   120   120   000-255 Blue 40
+23
+
+
+=== DMXTRACT PAGE 24 ===
+D M X T R A I T S
+CHANNEL
+DMX
+6   9   13 18 20 36 41 43 51 81 83 126 141 143 VALUES   FUNCTION
+CH CH CH CH CH CH CH CH CH CH CH CH CH CH
+CT Presets
+000-022 Open
+–   –   –   –   4   –   –   25   –   –   61   –   –   121
+023-089 CTO 2300K - 8900K
+090-255 9000K
+–   –   –   –   5   –   –   26   –   –   62   –   –   122   000-255 Green Shift
+–   –   5   4   6   –   25   27   31   61   63   –   121   123   000-255 Outer Color Macros
+Outer Dimmer, 0 to
+–   –   –   5   7   25   26   28   32   62   64   –   122   124   000-255
+100%
+Outer Dimmer Fine, 0
+–   –   –   6   8   26   27   29   33   63   65   –   123   125   000-255
+to 100%
+Outer Strobe Effect
+000-002 Open
+003-005 Strobe
+006-050 Ramp up
+–   –   8   7   9   27   28   30   34   64   66   –   124   126
+051-100 Ramp down
+101-150 Ramp up-down
+151-200 Lightning
+201-255 Random
+Outer Strobe Rate
+–   –   9   8   10   28   29   31   35   65   67   –   125   127
+000-255 Speed, slow to fast
+Outer Strobe Dura -
+–   –   10   9   11   29   30   32   36   66   68   –   126   128   tion
+000-255 Duration, slow to fast
+Outer Program
+Macro
+000-005 No function
+006-015 Macro 1
+016-025 Macro 2
+026-035 Macro 3
+036-045 Macro 4
+046-055 Macro 5
+056-065 Macro 6
+066-075 Macro 7
+076-085 Macro 8
+–   –   11   10   12   –   31   33   37   67   69   –   127   129
+086-095 Macro 9
+096-105 Macro 10
+106-115 Macro 11
+116-125 Macro 12
+126-135 Macro 13
+136-145 Macro 14
+146-155 Macro 15
+156-165 Macro 16
+166-175 Macro 17
+176-185 Macro 18
+186-195 Macro 19
+24
+
+
+=== DMXTRACT PAGE 25 ===
+D M X T R A I T S
+CHANNEL
+DMX
+6   9   13 18 20 36 41 43 51 81 83 126 141 143 VALUES   FUNCTION
+CH CH CH CH CH CH CH CH CH CH CH CH CH CH
+Outer Program
+Macro (continued)
+196-205 Macro 20
+206-215 Macro 21
+–   –   11   10   12   –   31   33   37   67   69   –   127   129
+216-225 Macro 22
+226-235 Macro 23
+236-245 Macro 24
+246-255 Macro 25
+Outer Program
+–   –   –   11   13   –   32   34   38   68   70   –   128   130   000-255
+Macro Speed
+–   –   –   –   –   –   –   –   39   69   71   121   129   131   000-255 White 1
+–   –   –   –   –   –   –   –   40   70   72   122   130   132   000-255 White 2
+–   –   –   –   –   –   –   –   41   71   73   123   131   133   000-255 White 3
+–   –   –   –   –   –   –   –   42   72   74   124   132   134   000-255 White 4
+–   –   –   –   –   –   –   –   43   73   75   125   133   135   000-255 White 5
+–   –   –   –   –   –   –   –   44   74   76   126   134   136   000-255 White 6
+–   –   –   –   –   30   33   35   –   –   –   –   –   –   000-255 Inner White Group 1
+–   –   –   –   –   31   34   36   –   –   –   –   –   –   000-255 Inner White Group 2
+Inner Dimmer, 0 to
+–   –   –   12   14   32   35   37   45   75   77   –   135   137   000-255
+100%
+Inner Dimmer Fine, 0
+–   –   –   13   15   33   36   38   46   76   78   –   136   138   000-255
+to 100%
+Inner Strobe Effect
+000-002 Open
+003-005 Strobe
+006-050 Ramp up
+–   –   –   14   16   34   37   39   47   77   79   –   137   139
+051-100 Ramp down
+101-150 Ramp up-down
+151-200 Lightning
+201-255 Random
+Inner Strobe Rate
+–   –   –   15   17   35   38   40   48   78   80   –   138   140
+000-255 Speed, slow to fast
+Inner Strobe Dura -
+–   –   –   16   18   36   39   41   49   79   81   –   139   141   tion
+000-255 Duration, slow to fast
+Inner Program Macro
+000-005 No Function
+006-033 Macro 1
+034-060 Macro 2
+061-088 Macro 3
+–   –   12   17   19   –   40   42   50   80   82   –   140   142   089-116 Macro 4
+117-144 Macro 5
+145-172 Macro 6
+173-200 Macro 7
+201-228 Macro 8
+229-255 Macro 9
+Inner Program Macro
+–   –   –   18   20   –   41   43   51   81   83   –   141   143   000-255
+Speed
+In/Out Program
+–   –   13   –   –   –   –   –   –   –   –   –   –   –   000-255 Macro Speed, slow
+to fast
+25
+
+
+=== DMXTRACT PAGE 26 ===
+R E M O T E D E V I C E M A N A G E M E N T ( R D M )
+NOTE: for RDM to work properly, RDM enabled equipment must be used throughout the entire
+system, including DMX data splitters and wireless systems.
+Remote Device Management (RDM) is a protocol that sits on top of the DMX512 data standard for
+lighting, allowing the DMX systems of the fixtures to be modified and monitored remotely. This protocol
+is ideal for instances in which a unit is installed in a location that is not easily accessible.
+With RDM, the DMX512 system becomes bi-directional, allowing a compatible RDM enabled controller
+to send out a signal to devices on the wire, as well as allowing the fixture to respond (known as a GET
+command). The controller can then use its SET command to modify settings that would typically have to
+be changed or viewed directly via the unit’s display screen, including the DMX Address, DMX Channel
+Mode, and Temperature Sensors.
+FIXTURE RDM INFORMATION:
+RDM Code   Device ID   Device Model ID   Personality ID
+6CH, 9CH, 13CH, 18CH, 36CH, 41CH, 51CH,
+1900   0000-FFFF   79
+81CH, 126CH, 141CHLK
+Please be aware that not all RDM devices support all RDM features, and therefore it is important
+to check beforehand to ensure that the equipment that you are considering includes all of the features
+that you require.
+The following parameters are accessible in RDM on this device:
+Parameter ID   Code
+Sensor Definition   [0x0200]
+Sensor Value   [0x0201]
+Device Model Description   [0x0080]
+Manufacturer Label   [0x0081]
+Device Label   [0x0082]
+DMX Personality   [0x00E0]
+DMX Personality Description   [0x00E1]
+Device Hours   [0x0400]
+Comms Status   [0x0015]
+Status ID Description   [0x0031]
+Clear Status ID   [0x0032]
+Device Power Cycles   [0x0405]
+Display Invert   [0x0500]
+Display Level   [0x0501]
+Realtime Clock   [0x0603]
+Power State   [0x1010]
+Preset Playback   [0x1031]
+Slot Information   [0x0120]
+Slot Description   [0x0122]
+Default Slot Value   [0x0122]
+Language   [0x00B0]
+Language Capabilities   [0x00A0]
+Boot Software Version Label   [0x00C2]
+Boot Software Version ID   [0x00C1]
+Product Detail ID List   [0x0070]
+Status Messages   [0x0030]
+26
+''';
+
+/// The four DMX Traits pages of the ADJ ElectraPix Par 7 manual (32-35),
+/// verbatim from this app's PDF.js text pass with blank cells as "–".
+const _electraPixPar7TraitsExcerpt = r'''
+=== DMXTRACT PAGE 32 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+5Ch 6Ch 7Ch 9Ch 12Ch 13Ch 22Ch 24Ch 42Ch 45Ch 60Ch VALUES
+–   1   1   1   1   –   1   1   –   –   –   000-255 All Red , 0–100%
+–   2   2   2   2   –   2   2   –   –   –   000-255 All Green , 0–100%
+–   3   3   3   3   –   3   3   –   –   –   000-255 All Blue , 0–100%
+–   4   4   4   4   –   4   4   –   –   –   000-255 All Amber , 0–100%
+–   5   5   5   5   –   5   5   –   –   –   000-255 All Lime , 0–100%
+–   6   6   6   6   –   6   6   –   –   –   000-255 All UV , 0–100%
+–   –   –   –   –   –   –   –   1   1   1   000-255 Red 1 , 0–100%
+–   –   –   –   –   –   –   –   2   2   2   000-255 Green 1 , 0–100%
+–   –   –   –   –   –   –   –   3   3   3   000-255 Blue 1 , 0–100%
+–   –   –   –   –   –   –   –   4   4   4   000-255 Amber 1 , 0–100%
+–   –   –   –   –   –   –   –   5   5   5   000-255 Lime 1 , 0–100%
+–   –   –   –   –   –   –   –   6   6   6   000-255 UV 1 , 0–100%
+–   –   –   –   –   –   –   –   7   7   7   000-255 Red 2 , 0–100%
+–   –   –   –   –   –   –   –   8   8   8   000-255 Green 2 , 0–100%
+–   –   –   –   –   –   –   –   9   9   9   000-255 Blue 2 , 0–100%
+–   –   –   –   –   –   –   –   10   10   10   000-255 Amber 2 , 0–100%
+–   –   –   –   –   –   –   –   11   11   11   000-255 Lime 2 , 0–100%
+–   –   –   –   –   –   –   –   12   12   12   000-255 UV 2 , 0–100%
+–   –   –   –   –   –   –   –   13   13   13   000-255 Red 3 , 0–100%
+–   –   –   –   –   –   –   –   14   14   14   000-255 Green 3 , 0–100%
+–   –   –   –   –   –   –   –   15   15   15   000-255 Blue 3 , 0–100%
+–   –   –   –   –   –   –   –   16   16   16   000-255 Amber 3 , 0–100%
+–   –   –   –   –   –   –   –   17   17   17   000-255 Lime 3 , 0–100%
+–   –   –   –   –   –   –   –   18   18   18   000-255 UV 3 , 0–100%
+...   ...   ...   ...   ...
+–   –   –   –   –   –   –   –   37   37   37   000-255 Red 7 , 0–100%
+–   –   –   –   –   –   –   –   38   38   38   000-255 Green 7 , 0–100%
+–   –   –   –   –   –   –   –   39   39   39   000-255 Blue 7 , 0–100%
+–   –   –   –   –   –   –   –   40   40   40   000-255 Amber 7 , 0–100%
+–   –   –   –   –   –   –   –   41   41   41   000-255 Lime 7 , 0–100%
+–   –   –   –   –   –   –   –   42   42   42   000-255 UV 7 , 0–100%
+RGBAL+UV Color
+Macros ,
+–   –   –   –   –   1   7   7   –   –   43   000-255
+see Color Macros
+section
+Background Red ,
+–   –   –   7   7   –   8   8   –   43   44   000-255
+0–100%
+Background Green ,
+–   –   –   8   8   –   9   9   –   44   45   000-255
+0–100%
+Background Blue ,
+–   –   –   9   9   –   10   10   –   45   46   000-255
+0–100%
+RGB Background
+Color Macros ,
+–   –   –   –   –   2   11   11   –   –   47   000-255
+see Color Macros
+section
+Color Temperature
+1   –   –   –   10   3   12   12   –   –   48   000-255 2300–9900K Linear,
+0–100%
+–   –   –   –   –   –   –   32   –   –   –
+
+
+=== DMXTRACT PAGE 33 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+5Ch 6Ch 7Ch 9Ch 12Ch 13Ch 22Ch 24Ch 42Ch 45Ch 60Ch VALUES
+White Color Temper -
+ature Presets
+2   –   –   –   –   4   13   13   –   –   49   0-22   Open
+23-99 See WCT Preset Chart
+100-255 No Function
+Shutter, Strobe
+0-31   LEDs Off
+32-63 LEDs On
+Strobe effect slow to
+64-95
+fast
+96-127 LEDs On
+3   –   –   –   11   5   14   14   –   –   50
+Pulse-effect in se -
+128-159
+quences
+160-191 LEDs On
+Random strobe effect
+192-223
+slow to fast
+224-255 LEDs On
+Dimmer (Intensity ) ,
+4   –   7   –   12   6   15   15   –   –   51   000-255
+0–100%
+Dimmer Fine (Inten -
+5   –   –   –   –   7   16   16   –   –   52   000-255
+sity)
+RGBAL+UV Pro -
+grams
+000-010 Off
+011-026 Auto Program 1
+027-043 Auto Program 2
+044-060 Auto Program 3
+061-076 Auto Program 4
+077-093 Auto Program 5
+–   –   –   –   –   8   17   17   –   –   53   094-110 Auto Program 6
+111-126 Auto Program 7
+127-143 Auto Program 8
+144-160 Auto Program 9
+161-176 Auto Program 10
+177-193 Auto Program 11
+194-210 Auto Program 12
+211-226 Auto Program 13
+227-255 No Function
+RGBAL+UV Pro -
+–   –   –   –   –   9   18   18   –   –   54   000-255 grams Speed ,
+slow to fast
+RGBAL+UV Pro -
+–   –   –   –   –   10   19   19   –   –   55   000-255 grams Fade ,
+least to most
+RGB Background
+Programs
+000-010 Off
+011-026 Auto Program 1
+–   –   –   –   –   11   20   20   –   –   56
+027-043 Auto Program 2
+044-060 Auto Program 3
+061-076 Auto Program 4
+077-093 Auto Program 5
+–   –   –   –   –   –   –   33   –   –   –
+
+
+=== DMXTRACT PAGE 34 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+5Ch 6Ch 7Ch 9Ch 12Ch 13Ch 22Ch 24Ch 42Ch 45Ch 60Ch VALUES
+RGB Background
+Programs (contin -
+ued)
+094-110 Auto Program 6
+111-126 Auto Program 7
+127-143 Auto Program 8
+144-160 Auto Program 9
+–   –   –   –   –   11   20   20   –   –   56   161-176 Auto Program 10
+177-193 Auto Program 11
+194-210 Auto Program 12
+211-226 Auto Program 13
+227-255 No Function
+RGB Background
+–   –   –   –   –   12   21   21   –   –   57   000-255 Programs Speed ,
+slow to fast
+RGB Background
+–   –   –   –   –   13   22   22   –   –   58   000-255 Program Fade , least
+to most
+Dim Mode
+000-020 Default to Unit Setting
+021-040 Standard
+041-060 Stage
+061-080 TV
+081-100 Architectural
+101-120 Theatre
+121-140 Stage 2
+Dim Speed
+141   0.1s
+142   0.2s
+143   0.3s
+144   0.4s
+145   0.5s
+146   0.6s
+–   –   –   –   –   –   –   23   –   –   59
+147   0.7s
+148   0.8s
+149   0.9s
+150   1.0s
+151   1.5s
+152   2.0s
+153   3.0s
+154   4.0s
+155   5.0s
+156   6.0s
+157   7.0s
+158   8.0s
+159   9.0s
+160   10.0s
+161-255 Default to Unit Setting
+–   –   –   –   –   –   –   34   –   –   –
+
+
+=== DMXTRACT PAGE 35 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+5Ch 6Ch 7Ch 9Ch 12Ch 13Ch 22Ch 24Ch 42Ch 45Ch 60Ch VALUES
+Dim Curves
+000-020 Square
+021-040 Linear
+–   –   –   –   –   –   –   24   –   –   60
+041-060 Inv Squa
+061-080 S Curve
+081-255 No Function
+–   –   –   –   –   –   –   35   –   –   –
+''';
+
+/// The three DMX Traits pages of the ADJ Element Hex IP manual (14-16),
+/// verbatim from this app's PDF.js text pass with blank cells as "–".
+const _elementHexIpTraitsExcerpt = r'''
+=== DMXTRACT PAGE 14 ===
+Element HEXIP   DMX Modes
+6 CH 7 CH 8 CH 11 CH 12 CH   VALUES   FUNCTIONS
+RED
+1   1   1   1   1
+000-255 0~100%
+GREEN
+2   2   2   2   2
+000-255 0~100%
+BLUE
+3   3   3   3   3
+000-255 0~100%
+WHITE
+4   4   4   4   4
+000-255 0~100%
+AMBER
+5   5   5   5   5
+000-255 0~100%
+UV
+6   6   6   6   6
+000-255 0~100%
+MASTER DIMMER
+–   7   7   7   7
+000-255 0~100%
+STROBING/SHUTTER
+000-031 LED OFF
+032-063 LED ON
+064-095 STROBING SLOW-FAST
+–   –   8   8   8   096-127 LED ON
+128-159 PULSE STROBING SLOW-FAST
+160-191 LED ON
+192-223 RANDOM STROBING SLOW-FAST
+224-255 LED ON
+PROGRAM SELECTION MODE
+000-051 RGBWA+UV DIMMING MODE
+052-102 COLOR MACRO MODE
+–   –   –   9   9
+103-153 COLOR CHANGE MODE
+154-204 COLOR FADE MODE
+205-255 SOUND ACTIVE MODE
+NOTE: 11 CHANNEL DMX MODE & 12 CHANNEL DMX MODE:
+When Channel 9 is between the values of 0-51, Channels 1-6 are used, and Channel 8 will control
+strobing.
+When Channel 9 is between the values of 52-102, Channel 10 is in Color Macros Mode, and
+Channel 8 will control strobing.
+When Channel 9 is between the values of 103-153, Channel 10 is in Color Change Mode, and
+Channel 11 will control the color change speed.
+When Channel 9 is between the values of 154-204, Channel 10 is in Color Fade Mode, and
+Channel 11 will control the color fade speed.
+When Channel 9 is between the values of 205-255, Channel 10 is in Sound Active Mode, and
+Channel 11 will control the sound sensitivity.
+ADJ Products, LLC - www.adj.com - Element HEXIP User Manual Page 13
+
+
+=== DMXTRACT PAGE 15 ===
+Element HEXIP   DMX Modes
+6 CH 7 CH 8 CH 11 CH 12 CH VALUES   FUNCTIONS
+PROGRAMS
+COLOR MACRO MODE
+000-255 SEE THE COLOR MACRO CHART ON PAGE 15
+COLOR CHANGE MODE
+000-015 COLOR CHANGE 1
+016-031 COLOR CHANGE 2
+032-047 COLOR CHANGE 3
+048-063 COLOR CHANGE 4
+064-079 COLOR CHANGE 5
+080-095 COLOR CHANGE 6
+096-111 COLOR CHANGE 7
+112-127 COLOR CHANGE 8
+128-143 COLOR CHANGE 9
+144-159 COLOR CHANGE 10
+160-175 COLOR CHANGE 11
+176-191 COLOR CHANGE 12
+192-207 COLOR CHANGE 13
+208-223 COLOR CHANGE 14
+224-239 COLOR CHANGE 15
+240-255 COLOR CHANGE 16
+COLOR FADE MODE
+000-015 COLOR FADE 1
+–   –   –   10   10   016-031 COLOR FADE 2
+032-047 COLOR FADE 3
+048-063 COLOR FADE 4
+064-079 COLOR FADE 5
+080-095 COLOR FADE 6
+096-111 COLOR FADE 7
+112-127 COLOR FADE 8
+128-143 COLOR FADE 9
+144-159 COLOR FADE 10
+160-175 COLOR FADE 11
+176-191 COLOR FADE 12
+192-207 COLOR FADE 13
+208-223 COLOR FADE 14
+224-239 COLOR FADE 15
+240-255 COLOR FADE 16
+SOUND ACTIVE MODE
+000-015 SOUND ACTIVE MODE 1
+016-031 SOUND ACTIVE MODE 2
+032-047 SOUND ACTIVE MODE 3
+048-063 SOUND ACTIVE MODE 4
+064-079 SOUND ACTIVE MODE 5
+080-095 SOUND ACTIVE MODE 6
+096-111 SOUND ACTIVE MODE 7
+112-127 SOUND ACTIVE MODE 8
+128-143 SOUND ACTIVE MODE 9
+144-159 SOUND ACTIVE MODE 10
+160-175 SOUND ACTIVE MODE 11
+176-191 SOUND ACTIVE MODE 12
+192-207 SOUND ACTIVE MODE 13
+208-223 SOUND ACTIVE MODE 14
+224-239 SOUND ACTIVE MODE 15
+240-255 SOUND ACTIVE MODE 16
+ADJ Products, LLC - www.adj.com - Element HEXIP User Manual Page 14
+
+
+=== DMXTRACT PAGE 16 ===
+Element HEXIP   DMX Modes
+6 CH 7 CH 8 CH 11 CH 12 CH   VALUES   FUNCTIONS
+PROGRAM SPEED/SOUND SENSITIVITY
+–   –   –   11   11   000-255 PROGRAM SPEED SLOW-FAST
+000-255 LEAST SENSITIVE-MOST SENSITIVE
+DIMMER CURVES
+000-020 STANDARD
+021-040 STAGE
+–   –   –   –   12
+041-060 TV
+061-080 ARCHITECTURAL
+081-100 THEATRE
+101-255 DEFAULT TO UNIT SETTING
+Element HEXIP   Color Macro Chart
+0-3=Off   64-67=B+W   128-131=G+B+W   192-195=R+B+W+A
+4-7=Red   68-71=B+A   132-135=G+B+A   196-199=R+B+W+UV
+8-11=Green   72-75=B+UV   136-139=G+B+UV   200-203=R+B+A+UV
+12-15=Blue   76-79=W+A   140-143=G+W+A   204-207=R+W+A+UV
+16-19=White   80-83=W+UV   144-147=G+W+UV   208-211=G+B+W+A
+20-23=Amber   84-87=A+UV   148-151=G+A+UV   212-215=G+B+W+UV
+24-27=UV   88-91=R+G+B   152-155=B+W+A   216-219=G+B+A+UV
+28-31=R+G   92-95=R+G+W   156-159=B+W+UV   220-223=G+W+A+UV
+32-35=R+B   96-99=R+G+A   160-163=B+A+UV   224-227=B+W+A+UV
+36-39=R+W   100-103=R+G+UV   164-167=W+A+UV   228-231=R+G+B+W+A
+40-43=R+A   104-107=R+B+W   168-171=R+G+B+W   232-235=R+G+B+W+UV
+44-47=R+UV   108-111=R+B+A   172-175=R+G+B+A   236-239=R+G+B+A+UV
+48-51=G+B   112-115=R+B+UV   176-179=R+G+B+UV   240-243=R+G+W+A+UV
+52-55=G+W   116-119=R+W+A   180-183=R+G+W+A   244-247=R+B+W+A=UV
+56-59=G+A   120-123=R+W+UV   184-187=R+G+W+UV   248-251=G+B+W+A+UV
+60-63=G+UV   124-127=R+A+UV   188-191=R+G+A+UV   252-255=R+G+B+W+A+UV
+ADJ Products, LLC - www.adj.com - Element HEXIP User Manual Page 15
+''';
+
+/// The two DMX Traits pages of the Eliminator LP 8R manual (19, 20),
+/// verbatim from this app's PDF.js text pass with blank cells as "–".
+const _lp8rTraitsExcerpt = r'''
+=== DMXTRACT PAGE 19 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION   LEDS
+3Ch 6Ch 13Ch 38Ch VALUES
+–   1   1   1   000-255 Main Dimming
+Strobe / Shutter
+000-031 Shutter Closed (LEDs OFF)
+032-063 Shutter OPEN (LEDS ON)
+064-095 Strobe effect slow to fast
+–   –   2   2   096-127 Shutter OPEN(LEDS ON)
+128-159 Pulse effect in sequences
+160-191 Shutter OPEN(LEDS ON)
+192-223 Random strobe effect slow to fast
+224-255 Shutter OPEN(LEDS ON)   Middle 7 LEDs
+–   2   –   3   000-255 Color macro function , from dark to bright
+–   –   3   4   000-255 Red dimming , from dark to bright
+–   –   4   5   000-255 Green dimming , from dark to bright
+–   –   5   6   000-255 Blue dimming , from dark to bright
+–   –   6   7   000-255 White dimming , from dark to bright
+–   3   7   8   000-255 Main dimming
+Strobe / Shutter
+000-031 Shutter Closed (LEDs OFF)
+032-063 Shutter OPEN (LEDS ON)
+064-095 Strobe effect slow to fast
+–   –   2   2   096-127 Shutter OPEN(LEDS ON)
+128-159 Pulse effect in sequences
+160-191 Shutter OPEN(LEDS ON)
+192-223 Random strobe effect slow to fast
+224-255 Shutter OPEN(LEDS ON)
+2   4   –   10   000-255 Color macro function
+–   5   –   11   000-255 Macro function auto-run
+–   6   –   12   000-255 Macro function auto-run speed , Slow to Fast
+–   –   9   13   000-255 Red 1 dimming , from dark to bright
+–   –   10   14   000-255 Green 1 dimming , from dark to bright
+–   –   11   15   000-255 Blue 1 dimming , from dark to bright   LED Strip
+–   –   –   16   000-255 Red 2 dimming , from dark to bright
+–   –   –   17   000-255 Green 2 dimming , from dark to bright
+–   –   –   18   000-255 Blue 2 dimming , from dark to bright
+–   –   –   19   000-255 Red 3 dimming , from dark to bright
+–   –   –   20   000-255 Green 3 dimming , from dark to bright
+–   –   –   21   000-255 Blue 3 dimming , from dark to bright
+–   –   –   22   000-255 Red 4 dimming , from dark to bright
+–   –   –   23   000-255 Green 4 dimming , from dark to bright
+–   –   –   24   000-255 Blue 4 dimming , from dark to bright
+–   –   –   25   000-255 Red 5 dimming , from dark to bright
+–   –   –   26   000-255 Green 5 dimming , from dark to bright
+–   –   –   27   000-255 Blue 5 dimming , from dark to bright
+19
+
+
+=== DMXTRACT PAGE 20 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+3Ch 6Ch 13Ch 38Ch VALUES
+–   –   –   28   000-255 Red 6 dimming , from dark to bright
+–   –   –   29   000-255 Green 6 dimming , from dark to bright
+–   –   –   30   000-255 Blue6 dimming , from dark to bright
+–   –   –   31   000-255 Red 7 dimming , from dark to bright
+–   –   –   32   000-255 Green 7 dimming , from dark to bright
+–   –   –   33   000-255 Blue 7 dimming , from dark to bright
+LED Strip
+–   –   –   34   000-255 Red 8 dimming , from dark to bright
+–   –   –   35   000-255 Green 8 dimming , from dark to bright
+–   –   –   36   000-255 Blue 8 dimming , from dark to bright
+Auto Run
+000-029 Empty , No Function
+Auto run 1 , Color fade-in and fade-out
+030-054
+(3 colors: red, green, and blue )
+Auto run 2 , Color fade-in and fade-out
+055-079
+(7 colors: red, green, blue, cyan, magenta, yellow, and white
+080-104 Auto run 3 , Color dimming
+1   –   12   37   105-129 Auto run 4 , Red fade-in and fade-out
+130-154 Auto run 5 , Green fade-in and fade-out
+155-179 Auto run 6 , Blue fade-in and fade-out
+180-204 Auto run 7 , White fade-in and fade-out
+205-229 Auto run 8 , Color changes (3 colors: red, green, and blue)
+Auto run 9 , Color changes
+230-255
+(7 colors: red, green, blue, cyan, magenta, yellow, and white)
+Speed / Sound sensitivity , Speed adjustment (when sound
+3   –   13   38   000-255
+control is off) / Sound control sensitivity (when sound control is on)
+20
+''';

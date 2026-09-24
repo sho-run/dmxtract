@@ -43,11 +43,44 @@ class DmxRange {
   }
 }
 
+/// The channel kinds the canonical fixture schema (schemas/fixture-v1.json,
+/// generated from the Rust core's `ChannelKind`) accepts.
+const schemaChannelKinds = {
+  'intensity',
+  'colorIntensity',
+  'pan',
+  'tilt',
+  'shutter',
+  'strobe',
+  'colorWheel',
+  'goboWheel',
+  'goboRotation',
+  'focus',
+  'zoom',
+  'prism',
+  'frost',
+  'speed',
+  'effect',
+  'maintenance',
+  'generic',
+};
+
+/// Folds a kind the schema has no variant for onto the nearest one it does.
+/// The extractor classifies a show/program/mode-select control as 'mode' and
+/// a CTC control as 'colorTemperature'; the Rust core rejects a fixture
+/// carrying either as invalid JSON, which used to fail validation and both
+/// exports outright (roughly one real manual in seven in the local corpus).
+String schemaChannelKind(String kind) => schemaChannelKinds.contains(kind)
+    ? kind
+    : kind == 'mode'
+    ? 'effect'
+    : 'generic';
+
 class DmxChannel {
   DmxChannel({
     required this.id,
     required this.name,
-    this.kind = 'generic',
+    String kind = 'generic',
     this.fineOf,
     this.color,
     this.wheelId,
@@ -55,7 +88,10 @@ class DmxChannel {
     this.gdtfFeature,
     List<DmxRange>? ranges,
     this.confidence = 1,
-  }) : ranges = ranges ?? [] {
+  }) : kind = schemaChannelKind(kind),
+       ranges = ranges ?? [] {
+    // `kind` here is still the constructor argument, not the folded field,
+    // so the default attribute keeps the finer meaning (Effects1, CTC).
     gdtfAttribute ??= defaultGdtfAttribute(kind, color);
     gdtfFeature ??= defaultGdtfFeature(gdtfAttribute!);
   }
