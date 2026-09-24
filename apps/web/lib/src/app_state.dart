@@ -311,7 +311,8 @@ class DmxtractState extends ChangeNotifier {
         fixture = FixtureProject.fromJson(
           jsonDecode(utf8.decode(bytes)) as Map<String, Object?>,
         );
-        questions = const [];
+        // Growable: editing a channel or the name removes its question.
+        questions = [];
         _unreadPagesNote = null;
         pageCount = 0;
         thumbnails = const [];
