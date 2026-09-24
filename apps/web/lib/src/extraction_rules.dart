@@ -2598,6 +2598,1010 @@ List<_DetectedModeTable> _robeProtocolModeTables(String text) {
   );
 }
 
+/// ADJ / Eliminator "DMX Traits" house style: one position column per DMX
+/// personality under a header row of channel counts ("11-CH MODE 24-CH
+/// MODE", "24 Ch 34 Ch 64 Ch VALUES", "31Ch 55Ch 57Ch 60Ch 237Ch VALUES",
+/// "30ch 36ch 45ch"), then DMX VALUES and FUNCTION/DESCRIPTION columns. It is
+/// the same "several modes as parallel position columns" idea as the
+/// grammars above, but none of their row grammar carries over, so it has its
+/// own section parser ([_parseModeColumnTraits]):
+///
+///  - a function a personality lacks is a *blank* cell, not a dash or an
+///    asterisk. manual_extractor.js (table_columns.js) reads each number's
+///    column off the page geometry and prints "–" for a blank cell, so a
+///    text-layer PDF arrives with every row explicit ("11   –   –   000-255
+///    Amber All"); without that (a photo, a scan) a row carries anywhere from
+///    one number to one per column, and [_assignModeColumns] infers where
+///    each lone number sat;
+///  - each position cell is merged down its function's whole block and
+///    vertically centered, so the numbers land on whichever line sits at
+///    the block's middle: part-way down a color list ("4   110 - 126
+///    Pink"), alone ("5"), or next to nothing but each other ("4   10");
+///  - the function name is a bold row of its own above the value rows
+///    ("UV Strobe", then "000 - 007   No strobe"); a one-range function
+///    either does the same or names itself at the head of that range's
+///    description ("2   7   000 - 255   4-in-1 LED + UV Show Speed , Slow to
+///    Fast"), and one merged cell can hold two name rows (Dim Modes, then
+///    Dimming Speed, on one channel);
+///  - a DMX value can be a single number ("141   0.1 s", "000   No
+///    Function"), which only reads unambiguously once rows are explicit;
+///  - a "…" row skips repeated pixel blocks ("Red 2".."Lime 2", "…", "Red
+///    6"), filled back in by [_expandTraitsRepeats];
+///  - a block cut by a page break reprints its name and numbers, marked
+///    "(cont'd from prev page)", "(cont.)" or "(continued)" - or not marked
+///    at all.
+///
+/// A smaller personality is not a prefix of a larger one: its functions come
+/// in a different order and can include ones no other personality has
+/// (Eliminator Furious Five RG's 11-CH column reads 1, 2, 3, 6, 4, 5, 9, 7,
+/// 8, 10, 11 down the page, and its channel 3 exists in no other mode), so
+/// every mode is assembled from its own column.
+///
+/// The header repeats at the top of every page the table spans, so each
+/// occurrence is read only to the end of its own page, and the prose pages
+/// after the table never reach the row parser. A page read twice - a photo's
+/// two OCR passes, or an OCR'd page's detailed and broad readings - carries
+/// the header twice; only the copy with the most value rows is used.
+List<_DetectedModeTable> _modeColumnTraitsTables(String text) {
+  // A count's unit, with the letter that tells two personalities of one size
+  // apart ("8Ch-A 8Ch-B" on COB Cannon LP200X, "9Ch A 9Ch B" on Par Z300
+  // RGBA).
+  const unit = r'CH(?:[ \t]*-[ \t]*([A-Z])\b|[ \t]+([A-Z])\b)?';
+  const word = r'(?:(?:DMX[ \t]+)?VALUES?|DESCRIPTION|FUNCTIONS?)\b';
+  final headerPattern = RegExp(
+    '^[ \\t]*((?:\\d{1,3}[ \\t]*-?[ \\t]*$unit(?:[ \\t]+MODE)?\\b[ \\t]*)'
+    '{2,16})(?:(?:DMX[ \\t]+)?VALUES?\\b[ \\t]*)?'
+    '(?:(?:DESCRIPTION|FUNCTIONS?)\\b[ \\t]*)?\$',
+    caseSensitive: false,
+    multiLine: true,
+  );
+  final countPattern = RegExp(
+    '(\\d{1,3})[ \\t]*-?[ \\t]*$unit',
+    caseSensitive: false,
+  );
+  // A count printed over its unit a row down ("58" above "Ch-A" on Vizi Pix
+  // Z19, "126" above "CH" on Jolt Panel FX2), sometimes with the VALUES label
+  // on a row between.
+  final stackedPattern = RegExp(
+    '^[ \\t]*((?:[1-9]\\d{0,2}[ \\t]+){1,15}[1-9]\\d{0,2})'
+    '(?:[ \\t]+$word)*[ \\t]*\\r?\\n'
+    '(?:[ \\t]*$word(?:[ \\t]+$word)*[ \\t]*\\r?\\n)?'
+    '[ \\t]*((?:$unit[ \\t]*){2,16})\$',
+    caseSensitive: false,
+    multiLine: true,
+  );
+  final unitPattern = RegExp(unit, caseSensitive: false);
+  String variant(RegExpMatch match, int group) => match.group(group) != null
+      ? '-${match.group(group)}'
+      : match.group(group + 1) != null
+      ? ' ${match.group(group + 1)}'
+      : '';
+  final pageStarts = [
+    for (final marker in RegExp(
+      r'^=== DMXTRACT PAGE \d+ ===[ \t]*$',
+      multiLine: true,
+    ).allMatches(text))
+      marker.start,
+  ];
+  final headers =
+      <({int start, int end, List<int> counts, List<String> variants})>[];
+  void addHeader(RegExpMatch match, List<int> counts, List<String> variants) {
+    final labels = {
+      for (var i = 0; i < counts.length; i++) '${counts[i]}${variants[i]}',
+    };
+    if (counts.length >= 2 &&
+        counts.length == variants.length &&
+        counts.every((count) => count >= 1 && count <= 512) &&
+        labels.length == counts.length) {
+      headers.add((
+        start: match.start,
+        end: match.end,
+        counts: counts,
+        variants: variants,
+      ));
+    }
+  }
+
+  for (final match in headerPattern.allMatches(text)) {
+    final labels = countPattern.allMatches(match.group(1)!).toList();
+    addHeader(
+      match,
+      [for (final label in labels) int.parse(label.group(1)!)],
+      [for (final label in labels) variant(label, 2)],
+    );
+  }
+  for (final match in stackedPattern.allMatches(text)) {
+    addHeader(
+      match,
+      [
+        for (final count in match.group(1)!.trim().split(RegExp(r'[ \t]+')))
+          int.parse(count),
+      ],
+      [
+        for (final label in unitPattern.allMatches(match.group(2)!))
+          variant(label, 1),
+      ],
+    );
+  }
+  headers.sort((a, b) => a.start.compareTo(b.start));
+  // Consecutive headers are one table when they name the same personalities
+  // and differ in at most one count - a misprint on one page (Encore LP12Z
+  // IP's first traits page reads "16Ch" where the next two read "18Ch").
+  // Each column takes the largest count printed.
+  bool sameTable(
+    ({List<int> counts, List<String> variants}) a,
+    ({List<int> counts, List<String> variants}) b,
+  ) {
+    if (a.counts.length != b.counts.length) return false;
+    var differ = 0;
+    for (var i = 0; i < a.counts.length; i++) {
+      if (a.variants[i] != b.variants[i]) return false;
+      if (a.counts[i] != b.counts[i]) differ++;
+    }
+    return differ <= 1;
+  }
+
+  final tables = <_DetectedModeTable>[];
+  var index = 0;
+  while (index < headers.length) {
+    final counts = [...headers[index].counts];
+    final variants = headers[index].variants;
+    var next = index + 1;
+    while (next < headers.length &&
+        sameTable(
+          (counts: headers[next].counts, variants: headers[next].variants),
+          (counts: headers[index].counts, variants: variants),
+        )) {
+      for (var i = 0; i < counts.length; i++) {
+        if (headers[next].counts[i] > counts[i]) {
+          counts[i] = headers[next].counts[i];
+        }
+      }
+      next++;
+    }
+    // One copy of the table per page: the one with the most value rows.
+    final byPage = <int, List<String>>{};
+    final valueRow = RegExp(r'\b\d{1,3}[ \t]?[-–—][ \t]?\d{1,3}\b');
+    int valueRows(List<String> lines) =>
+        lines.where((line) => valueRow.hasMatch(line)).length;
+    for (var k = index; k < next; k++) {
+      final start = headers[k].end;
+      final nextHeader = k + 1 < headers.length ? headers[k + 1].start : null;
+      final pageBreak = pageStarts
+          .where((marker) => marker > start)
+          .firstOrNull;
+      final end =
+          pageBreak != null && (nextHeader == null || pageBreak < nextHeader)
+          ? pageBreak
+          : nextHeader ?? text.length;
+      final lines = text.substring(start, end).split(RegExp(r'\r\n|\r|\n'));
+      final page = pageStarts.where((marker) => marker < start).length;
+      final kept = byPage[page];
+      if (kept == null || valueRows(lines) >= valueRows(kept)) {
+        byPage[page] = lines;
+      }
+    }
+    tables.addAll(
+      _parseModeColumnTraits(byPage.values.toList(), counts, variants),
+    );
+    index = next;
+  }
+  return tables;
+}
+
+/// What a [_modeColumnTraitsTables] line says once its position cells are
+/// set aside: a value range ("000 - 007   Off", or a single value "141
+/// 0.1 s"), a function name or other text, or a "…" row. A single value
+/// whose description is a bare number ("173   900", in Hz under a "LED
+/// Refresh Rate (Hz)" name row) is flagged, since it reads just like a stray
+/// pair of numbers.
+typedef _TraitsContent = ({
+  (int, int)? range,
+  String text,
+  bool ellipsis,
+  bool bareValue,
+});
+
+_TraitsContent _traitsContent(String value) {
+  final line = value.trim();
+  // "…", "...", or dots in every column with the value range left standing
+  // ("..   ...   ...   0-255 ..." on ElectraPix Bar 16).
+  if (RegExp(
+    '^(?:…|\\.{2,})(?:[\\s,.…]|\\d{1,3}[ \\t]*$_rangeSeparatorClass'
+    '[ \\t]*\\d{1,3})*\$',
+  ).hasMatch(line)) {
+    return (range: null, text: '', ellipsis: true, bareValue: false);
+  }
+  final range = RegExp(
+    '^(\\d{1,3})[ \\t]*$_rangeSeparatorClass[ \\t]*(\\d{1,3})(?!\\d)'
+    '(?:[ \\t]+(.*))?\$',
+  ).firstMatch(line);
+  if (range != null) {
+    final start = int.parse(range.group(1)!);
+    final end = int.parse(range.group(2)!);
+    if (start <= end && end <= 255) {
+      return (
+        range: (start, end),
+        text: (range.group(3) ?? '').trim(),
+        ellipsis: false,
+        bareValue: false,
+      );
+    }
+  }
+  // A single value sits in the VALUES column, a column gap away from what it
+  // does ("141   0.1 s"); a name that merely starts with a number is one run
+  // of text ("64 Color Macros").
+  final single = RegExp(r'^(\d{1,3})[ \t]{2,}(\S.*)$').firstMatch(line);
+  if (single != null && int.parse(single.group(1)!) <= 255) {
+    final value = int.parse(single.group(1)!);
+    final description = single.group(2)!.trim();
+    return (
+      range: (value, value),
+      text: description,
+      ellipsis: false,
+      bareValue: !RegExp('[A-Za-z]').hasMatch(description),
+    );
+  }
+  // A name or description has words - or is the "100%" that a description
+  // wrapped after "0 to" leaves for its last line; whatever else is left
+  // over (OCR specks, stray punctuation, a lone page number) is noise.
+  return (
+    range: null,
+    text: RegExp(r'[A-Za-z]|^\d{1,3}[ \t]*%$').hasMatch(line) ? line : '',
+    ellipsis: false,
+    bareValue: false,
+  );
+}
+
+/// One physical line of a [_modeColumnTraitsTables] section: its leading
+/// run of position-like tokens (a number, or null for a "–" printed in a
+/// blank cell) and the text left after each of them, so the line can be read
+/// once the section knows how many of those tokens are really cells - the
+/// rest ("30   36   45   237   6000" under three columns) begin the value.
+class _TraitsLine {
+  _TraitsLine({
+    required this.cells,
+    required this.continued,
+    required this.restAfter,
+  });
+  List<int?> cells;
+
+  /// The line carried a "(cont'd from prev page)" or "(continued)" marker.
+  final bool continued;
+
+  /// `restAfter[k]` is the line after its first k tokens; `restAfter[0]` is
+  /// the whole line.
+  final List<String> restAfter;
+
+  /// Whether [cells] are positions; decided per section in
+  /// [_parseModeColumnTraits].
+  bool positional = false;
+  late _TraitsContent content;
+
+  /// Already folded into a neighbouring range's wrapped description.
+  bool consumed = false;
+  bool get isBareText =>
+      !positional && content.range == null && content.text.isNotEmpty;
+}
+
+/// One function's block in a [_modeColumnTraitsTables] section: its name
+/// row, the position it holds in each mode column (null for a blank cell),
+/// and its value ranges. A block cut by a page break arrives as two of
+/// these, joined later by the positions they share.
+class _TraitsBlock {
+  _TraitsBlock(int columnCount, {this.label, this.continued = false})
+    : positions = List<int?>.filled(columnCount, null);
+  String? label;
+  final bool continued;
+  final List<int?> positions;
+  final ranges = <({int start, int end, String text})>[];
+  bool get hasPositions => positions.any((position) => position != null);
+  bool overlaps(int start, int end) =>
+      ranges.any((range) => start <= range.end && end >= range.start);
+}
+
+final _traitsContinuedCell = RegExp(
+  r"\(\s*cont(?:['’`]?d\b|inued\b|\.|\b)(?:[ \t]+from)?"
+  r'(?:[ \t]+prev(?:ious)?)?(?:[ \t]+page)?[ \t]*\)?',
+  caseSensitive: false,
+);
+
+/// The rest of a "(cont'd from prev page)" cell after it wrapped onto the
+/// next line(s) of its narrow column: "from prev", "prev page)", "page)".
+final _traitsContinuedTail = RegExp(
+  r'^(?:from[ \t]+prev(?:ious)?(?:[ \t]+page)?[ \t]*\)?'
+  r'|prev(?:ious)?[ \t]+page[ \t]*\)?|page[ \t]*\))(?=[ \t]|$)',
+  caseSensitive: false,
+);
+
+final _traitsHeaderWords = RegExp(
+  r'^(?:channel|mode|(?:dmx[ \t]+)?values?|description|functions?)'
+  r'(?:[ \t]+(?:channel|mode|(?:dmx[ \t]+)?values?|description|functions?))*$',
+  caseSensitive: false,
+);
+
+_TraitsLine? _traitsLine(String raw) {
+  var line = raw.trim();
+  if (line.isEmpty || line.startsWith('=== DMXTRACT PAGE')) return null;
+  var continued = false;
+  line = line.replaceFirst(_traitsContinuedTail, '').replaceAllMapped(
+    _traitsContinuedCell,
+    (_) {
+      continued = true;
+      return '   ';
+    },
+  ).trim();
+  // Page furniture, the header's own words, a "CONTINUED ON NEXT PAGE"
+  // footer, and a note printed across the description column ("NOTE: LED
+  // Spot Strobe works only when...") are none of them rows.
+  if (line.isEmpty ||
+      _looksLikePageFurniture(line) ||
+      _traitsHeaderWords.hasMatch(line) ||
+      RegExp(
+        r'^(?:continued\b|notes?\b|\*)',
+        caseSensitive: false,
+      ).hasMatch(line)) {
+    return null;
+  }
+  // A position is never zero-padded ("000" is a DMX value), never the start
+  // of a range ("110 - 126", "000-255") and never the first word of a name
+  // ("64 Color Macros" - a cell is followed by a column gap, another cell or
+  // the end of the line). A range's separator sits at most a space from its
+  // numbers; a blank cell's "–" sits a column gap away ("20   –   000-255").
+  final cell = RegExp(
+    r'^(?:([1-9]\d{0,2})|[-–—])(?=[ \t]{2,}|[ \t][\d–—-]|[ \t]*$)',
+  );
+  final rangeAhead = RegExp('^[ \\t]?$_rangeSeparatorClass[ \\t]?\\d');
+  final cells = <int?>[];
+  final restAfter = [line];
+  while (true) {
+    final match = cell.firstMatch(restAfter.last);
+    if (match == null) break;
+    final after = restAfter.last.substring(match.end);
+    if (match.group(1) != null && rangeAhead.hasMatch(after)) break;
+    cells.add(match.group(1) == null ? null : int.parse(match.group(1)!));
+    restAfter.add(after.trimLeft());
+  }
+  final whole = _traitsContent(line);
+  if (cells.isEmpty &&
+      whole.range == null &&
+      whole.text.isEmpty &&
+      !whole.ellipsis) {
+    return null;
+  }
+  return _TraitsLine(cells: cells, continued: continued, restAfter: restAfter);
+}
+
+List<_DetectedModeTable> _parseModeColumnTraits(
+  List<List<String>> pages,
+  List<int> counts,
+  List<String> variants,
+) {
+  final columnCount = counts.length;
+  final pageLines = [
+    for (final page in pages) [for (final raw in page) ?_traitsLine(raw)],
+  ];
+  // Rows made explicit by manual_extractor.js carry one cell per column,
+  // blanks printed as "–". Once any has, a line with fewer cells isn't a
+  // position row - its leading number is a DMX value ("141   0.1 s") -
+  // unless it continues a block across a page break.
+  final explicit = pageLines.any(
+    (lines) => lines.any(
+      (line) => line.cells.length == columnCount && line.cells.contains(null),
+    ),
+  );
+  for (final lines in pageLines) {
+    for (final line in lines) {
+      if (line.cells.length > columnCount) {
+        line.cells = line.cells.sublist(0, columnCount);
+      }
+      final numbered = line.cells.any((cell) => cell != null);
+      line.positional =
+          numbered &&
+          (line.cells.length == columnCount ||
+              line.continued ||
+              (!explicit && !line.cells.contains(null)));
+      line.content = _traitsContent(
+        line.restAfter[line.positional ? line.cells.length : 0],
+      );
+    }
+  }
+  final lines = <_TraitsLine>[];
+  for (final page in pageLines) {
+    // Below a page's last value row sits only its footer - the page number
+    // (which reads exactly like a lone position number), a web address, the
+    // title lines of a second copy of the page - since a block cut by the
+    // page break is reprinted on the next one. The one exception is the
+    // second half of a wrapped description whose range is that last row.
+    final lastRange = page.lastIndexWhere((line) => line.content.range != null);
+    var keep = lastRange + 1;
+    if (lastRange >= 0 &&
+        page[lastRange].content.text.isEmpty &&
+        keep < page.length &&
+        page[keep].isBareText) {
+      keep++;
+    }
+    page.removeRange(keep, page.length);
+    lines.addAll(page);
+  }
+
+  final last = List<int>.filled(columnCount, 0);
+  final used = [for (final _ in counts) <int>{}];
+  final blocks = <_TraitsBlock>[];
+  final gaps = <int>[];
+  _TraitsBlock? current;
+  // A description line that arrived with its block's position numbers,
+  // waiting for the value range it describes.
+  ({_TraitsBlock block, String text})? pending;
+
+  // Whether bare text at lines[i], right after a value row that printed no
+  // description, is that row's description rather than the next function's
+  // name: it is when another text line follows (the next name), or a row
+  // that names its own value, or nothing. A name is followed by its values -
+  // and a line broken with a hyphen, or followed by one that ends in ",",
+  // begins a name ("RGB Background" / "Color Macros ,").
+  bool describesAbove(int i) {
+    final next = lines.skip(i + 1).where((line) => !line.consumed).firstOrNull;
+    if (lines[i].content.text.endsWith('-') ||
+        (next != null && next.isBareText && next.content.text.endsWith(','))) {
+      return false;
+    }
+    return next == null ||
+        next.content.ellipsis ||
+        next.isBareText ||
+        (next.positional &&
+            next.content.range != null &&
+            next.content.text.isNotEmpty);
+  }
+
+  // Records a line's cells as [block]'s positions when they fit its
+  // still-blank columns: straight across for a row with a cell per column,
+  // by [_assignModeColumns] otherwise. A cell past its column's count is a
+  // misprint (COB Cannon LP200X prints "166" between its 20Ch column's 15
+  // and 17), so that column stays blank on the block and the channel it
+  // should have named is left for the Check step to ask about.
+  bool place(_TraitsBlock block, _TraitsLine line) {
+    final positions = line.cells.length == columnCount
+        ? [
+            for (var column = 0; column < columnCount; column++)
+              (line.cells[column] ?? counts[column] + 1) <= counts[column]
+                  ? line.cells[column]
+                  : null,
+          ]
+        : _assignModeColumns(
+            [for (final cell in line.cells) ?cell],
+            counts,
+            last,
+            used,
+            continued: line.continued || block.continued,
+          );
+    if (positions == null) return false;
+    for (var column = 0; column < columnCount; column++) {
+      final held = block.positions[column];
+      if (positions[column] != null &&
+          held != null &&
+          held != positions[column]) {
+        return false;
+      }
+    }
+    for (var column = 0; column < columnCount; column++) {
+      final position = positions[column];
+      if (position == null) continue;
+      block.positions[column] = position;
+      last[column] = position;
+      used[column].add(position);
+    }
+    return true;
+  }
+
+  for (var i = 0; i < lines.length; i++) {
+    final line = lines[i];
+    if (line.consumed) continue;
+    final open = current;
+    // A description too long for its cell wraps onto a second line, and the
+    // range, centered on the now taller row, lands between the two halves:
+    // "Both LED Spots, Contrasting Single Color Half" / "062 - 088" /
+    // "Display". Only inside a block still collecting values - after a
+    // finished block the same shape is a name row, a range left blank, and
+    // the next name row - unless the second half starts in lower case, the
+    // rest of a sentence ("Auto Programs Fade, minimum to maximum" / "000 -
+    // 255" / "fade", a one-range function's own row), or the first half
+    // breaks off mid-phrase ("Outer Green, 0 to" / "000-255" / "100%"), or
+    // repeats the name of the function just before ("Inner Program Macro" /
+    // "000-255" / "Speed" after Inner Program Macro itself).
+    if (line.isBareText &&
+        i + 2 < lines.length &&
+        lines[i + 1].content.range != null &&
+        lines[i + 1].content.text.isEmpty &&
+        lines[i + 2].isBareText &&
+        (RegExp(
+              r'^\p{Ll}',
+              unicode: true,
+            ).hasMatch(lines[i + 2].content.text) ||
+            RegExp(r'\bto$').hasMatch(line.content.text) ||
+            (open != null && open.label == line.content.text) ||
+            (open != null &&
+                open.ranges.isNotEmpty &&
+                !_rangesCoverFull([
+                  for (final range in open.ranges)
+                    DmxRange(
+                      start: range.start,
+                      end: range.end,
+                      name: range.text,
+                    ),
+                ])))) {
+      final middle = lines[i + 1];
+      middle.content = (
+        range: middle.content.range,
+        text: _joinTraitsWrap(line.content.text, lines[i + 2].content.text),
+        ellipsis: false,
+        bareValue: false,
+      );
+      lines[i + 2].consumed = true;
+      continue;
+    }
+    final content = line.content;
+    if (content.ellipsis) {
+      gaps.add(blocks.length);
+      current = null;
+      continue;
+    }
+    if (content.range == null && content.text.isNotEmpty) {
+      final lower = RegExp(r'^\p{Ll}', unicode: true).hasMatch(content.text);
+      if (!line.positional &&
+          open != null &&
+          open.label != null &&
+          open.ranges.isEmpty &&
+          !open.hasPositions) {
+        // A function name long enough to wrap onto a second line.
+        open.label = _joinTraitsWrap(open.label!, content.text);
+        continue;
+      }
+      if (!line.positional &&
+          open != null &&
+          open.ranges.isNotEmpty &&
+          (lower ||
+              (open.hasPositions &&
+                  open.ranges.last.text.isEmpty &&
+                  describesAbove(i)))) {
+        // The rest of the last range's description, wrapped below it ("23 -
+        // 99" / "refer to Color Temperature Chart"), or all of it when the
+        // value row printed none ("Color Macros" / "... 0-255" / "(See
+        // Color Macros)" / "Color Temperature" on COB Cannon LP200X). A
+        // description still waiting for its value takes the line instead.
+        if (lower && identical(pending?.block, open)) {
+          pending = (block: open, text: '${pending!.text} ${content.text}');
+          continue;
+        }
+        final last = open.ranges.removeLast();
+        open.ranges.add((
+          start: last.start,
+          end: last.end,
+          text: '${last.text} ${content.text}'.trim(),
+        ));
+        continue;
+      }
+      if (line.positional &&
+          open != null &&
+          open.label != null &&
+          !open.hasPositions &&
+          place(open, line)) {
+        // The block's position numbers, centered on a line of its merged
+        // cell that holds text: the rest of its name ("Outer Strobe Dura-" /
+        // "tion"), or a line of a description that wraps around the value
+        // below it ("White Color Temperature Presets," above "23 - 99").
+        final label = open.label!;
+        if (open.ranges.isEmpty && (label.endsWith('-') || lower)) {
+          open.label = _joinTraitsWrap(label, content.text);
+        } else {
+          pending = (block: open, text: content.text);
+        }
+        continue;
+      }
+      // A "100%" left over from a wrapped description is no name.
+      if (!RegExp('[A-Za-z]').hasMatch(content.text)) continue;
+      final block = _TraitsBlock(
+        columnCount,
+        label: content.text,
+        continued: line.continued,
+      );
+      blocks.add(block);
+      current = block;
+      if (line.positional) place(block, line);
+      continue;
+    }
+    if (content.range == null) {
+      if (!line.positional) continue;
+      // Position numbers on a line of their own, centered in the block.
+      if (open != null &&
+          (!open.hasPositions || line.continued) &&
+          place(open, line)) {
+        continue;
+      }
+      final block = _TraitsBlock(columnCount);
+      blocks.add(block);
+      current = block;
+      place(block, line);
+      continue;
+    }
+    final (start, end) = content.range!;
+    if (content.bareValue &&
+        (open == null || open.ranges.any((range) => range.end >= start))) {
+      // A bare "value   number" pair only counts while it carries on up the
+      // open block's values ("173   900" after "171 - 172"); anywhere else
+      // it is a stray ("55   55" after "160   10 s").
+      continue;
+    }
+    final joinsOpen =
+        open != null &&
+        !open.overlaps(start, end) &&
+        (!line.positional || !open.hasPositions || line.continued);
+    final block = joinsOpen ? open : _TraitsBlock(columnCount);
+    if (!joinsOpen) {
+      blocks.add(block);
+      current = block;
+    }
+    if (line.positional) place(block, line);
+    final lead = identical(pending?.block, block) ? pending!.text : '';
+    pending = null;
+    var text = '$lead ${content.text}'.trim();
+    final comma = text.endsWith(',') ? text.length - 1 : text.indexOf(' , ');
+    if (block.ranges.isEmpty &&
+        block.label != null &&
+        lead.isEmpty &&
+        start == 0 &&
+        end == 255 &&
+        comma > 0 &&
+        RegExp(r'^\p{L}', unicode: true).hasMatch(text)) {
+      // ADJ ends a name with " ," and the description follows it. On the
+      // one value (0-255) of a block whose name row is above, words up to
+      // that comma are the rest of the name ("RGBAL+UV Pro -" / "... 000-255 grams
+      // Speed ," / "slow to fast"; "RGB Background" / "... 000-255 Program
+      // Fade , least" / "to most"); a description wrapped at a comma starts
+      // with its value instead ("2300–9900K Linear," / "0–100%").
+      block.label = _joinTraitsWrap(
+        block.label!,
+        text.substring(0, comma).trim(),
+      );
+      text = text
+          .substring(comma + 1)
+          .replaceFirst(RegExp(r'^\s*,?'), '')
+          .trim();
+    }
+    block.ranges.add((start: start, end: end, text: text));
+  }
+  _expandTraitsRepeats(blocks, gaps, columnCount);
+  _mergeTraitsNameRows(blocks);
+
+  final tables = <_DetectedModeTable>[];
+  for (var column = 0; column < columnCount; column++) {
+    final byPosition = <int, List<_TraitsBlock>>{};
+    for (final block in blocks) {
+      final position = block.positions[column];
+      if (position != null) {
+        byPosition.putIfAbsent(position, () => []).add(block);
+      }
+    }
+    final size = counts[column];
+    tables.add(
+      _DetectedModeTable(
+        code: '${size}Ch${variants[column]}',
+        channelCount: size,
+        parsedCount: byPosition.length,
+        channels: [
+          for (var position = 1; position <= size; position++)
+            byPosition[position] == null
+                ? _DetectedChannel(
+                    name: 'Channel $position',
+                    kind: 'generic',
+                    confidence: .25,
+                  )
+                : _traitsChannel(byPosition[position]!, position),
+        ],
+      ),
+    );
+  }
+  // A header that most of the widest personality's rows didn't follow -
+  // printed on the table's first page only, say - is too little evidence to
+  // claim the document from the other grammars.
+  final widest = tables.reduce(
+    (a, b) => a.channelCount >= b.channelCount ? a : b,
+  );
+  return widest.parsedCount * 2 < widest.channelCount ? const [] : tables;
+}
+
+/// A block's function name - its name row, or for a one-range function the
+/// head of that range's description - split around its last number:
+/// "Ring Red 60" is template "Ring Red #", index 60. A space before the
+/// number doesn't matter: ElectraPix Bar 16 prints its first pixel "Red1"
+/// and its last "Red 16".
+({String template, int index})? _traitsIndex(_TraitsBlock block) {
+  final name =
+      block.label ??
+      (block.ranges.length == 1
+          ? block.ranges.single.text.split(',').first
+          : null);
+  final match = name == null
+      ? null
+      : RegExp(r'^(.*?)(\d+)(\D*)$').firstMatch(name.trim());
+  if (match == null) return null;
+  return (
+    template: '${match.group(1)!.trimRight()} #${match.group(3)}',
+    index: int.parse(match.group(2)!),
+  );
+}
+
+/// The two halves of a wrapped name or description, as one: "Dimmer Fine
+/// (Inten -" and "sity)" are a word broken by a hyphen.
+String _joinTraitsWrap(String first, String second) {
+  final hyphen = RegExp(r'[ \t]*-$').firstMatch(first);
+  return hyphen != null && RegExp(r'^\p{Ll}', unicode: true).hasMatch(second)
+      ? '${first.substring(0, hyphen.start)}$second'
+      : '$first $second';
+}
+
+String _withTraitsIndex(String value, int from, int to) =>
+    value.replaceAll(RegExp('(?<![0-9])$from(?![0-9])'), '$to');
+
+/// Fills in the functions a table skips with a "…" row: repeated pixel
+/// blocks it prints only for the first pixels and the last ("Red 1".."Lime
+/// 2", "…", "Red 6".."Lime 6"). The run of blocks just above the gap that
+/// share one index is the repeating unit, and the block just below names the
+/// index the run resumes at. A column is filled only when the unit sits in it
+/// as consecutive positions and the block below lands exactly the skipped
+/// units further on; otherwise that column is left for the user to check.
+void _expandTraitsRepeats(
+  List<_TraitsBlock> blocks,
+  List<int> gaps,
+  int columnCount,
+) {
+  final added = <_TraitsBlock>[];
+  for (final gap in gaps) {
+    if (gap == 0 || gap >= blocks.length) continue;
+    final above = _traitsIndex(blocks[gap - 1]);
+    final below = _traitsIndex(blocks[gap]);
+    if (above == null || below == null || below.index <= above.index + 1) {
+      continue;
+    }
+    final unit = <_TraitsBlock>[];
+    for (var i = gap - 1; i >= 0; i--) {
+      if (_traitsIndex(blocks[i])?.index != above.index) break;
+      unit.insert(0, blocks[i]);
+    }
+    if (_traitsIndex(unit.first)!.template != below.template) continue;
+    final skipped = below.index - above.index - 1;
+    final columns = <int>[];
+    for (var column = 0; column < columnCount; column++) {
+      final held = [for (final block in unit) block.positions[column]];
+      if (held.contains(null)) continue;
+      final first = held.first!;
+      final consecutive = [
+        for (var k = 0; k < held.length; k++) held[k] == first + k,
+      ].every((ok) => ok);
+      if (consecutive &&
+          blocks[gap].positions[column] ==
+              first + (skipped + 1) * unit.length) {
+        columns.add(column);
+      }
+    }
+    if (columns.isEmpty) continue;
+    for (var step = 1; step <= skipped; step++) {
+      final index = above.index + step;
+      for (final member in unit) {
+        final copy = _TraitsBlock(
+          columnCount,
+          label: member.label == null
+              ? null
+              : _withTraitsIndex(member.label!, above.index, index),
+        );
+        for (final column in columns) {
+          copy.positions[column] =
+              member.positions[column]! + step * unit.length;
+        }
+        for (final range in member.ranges) {
+          copy.ranges.add((
+            start: range.start,
+            end: range.end,
+            text: _withTraitsIndex(range.text, above.index, index),
+          ));
+        }
+        added.add(copy);
+      }
+    }
+  }
+  blocks.addAll(added);
+}
+
+/// One merged position cell can hold two function-name rows on the same DMX
+/// channel, and the cell's numbers then sit beside only one of them: VIZI
+/// FX7's Dim Modes, then Dimming Speed with the numbers; Protégé XL's
+/// Special Functions with the numbers, then LED Refresh Rate (Hz). A named
+/// block left without a position is folded into the neighbour it carries on
+/// from - the block above when its values continue past that block's, else
+/// the block below when they stop short of where that block's begin.
+void _mergeTraitsNameRows(List<_TraitsBlock> blocks) {
+  int lowest(_TraitsBlock block) =>
+      block.ranges.map((range) => range.start).reduce((a, b) => a < b ? a : b);
+  int highest(_TraitsBlock block) =>
+      block.ranges.map((range) => range.end).reduce((a, b) => a > b ? a : b);
+  bool anchors(_TraitsBlock block) =>
+      block.hasPositions && block.ranges.isNotEmpty;
+  var i = 0;
+  while (i < blocks.length) {
+    final block = blocks[i];
+    if (block.hasPositions || block.label == null || block.ranges.isEmpty) {
+      i++;
+      continue;
+    }
+    final above = i > 0 ? blocks[i - 1] : null;
+    final below = i + 1 < blocks.length ? blocks[i + 1] : null;
+    if (above != null && anchors(above) && highest(above) < lowest(block)) {
+      above.label = above.label == null
+          ? block.label
+          : '${above.label} / ${block.label}';
+      above.ranges.addAll(block.ranges);
+      blocks.removeAt(i);
+    } else if (below != null &&
+        anchors(below) &&
+        highest(block) < lowest(below)) {
+      below.label = below.label == null
+          ? block.label
+          : '${block.label} / ${below.label}';
+      below.ranges.insertAll(0, block.ranges);
+      blocks.removeAt(i);
+    } else {
+      i++;
+    }
+  }
+}
+
+/// Places a row's position numbers into mode columns when some of its cells
+/// were blank ([_modeColumnTraitsTables]). The numbers keep their left-to-
+/// right order, and a column only takes a position inside its mode that it
+/// hasn't used yet. The table is printed in the widest mode's order, so that
+/// column counts up one block at a time while the narrower ones jump
+/// around: a placement that continues a column's own count (its last
+/// position + 1) wins, and ties go to the wider columns. A number that
+/// resumes a block after a page break ("(cont'd from prev page)") repeats
+/// its column's last position instead. Null when nothing fits.
+List<int?>? _assignModeColumns(
+  List<int> numbers,
+  List<int> counts,
+  List<int> last,
+  List<Set<int>> used, {
+  required bool continued,
+}) {
+  final columnCount = counts.length;
+  if (numbers.isEmpty || numbers.length > columnCount) return null;
+  List<int?>? best;
+  var bestScore = -1;
+  var bestWidth = -1;
+  final placed = List<int?>.filled(columnCount, null);
+  void search(int index, int fromColumn, int score, int width) {
+    if (index == numbers.length) {
+      if (score > bestScore || (score == bestScore && width > bestWidth)) {
+        best = List.of(placed);
+        bestScore = score;
+        bestWidth = width;
+      }
+      return;
+    }
+    final number = numbers[index];
+    final lastColumn = columnCount - (numbers.length - index);
+    for (var column = fromColumn; column <= lastColumn; column++) {
+      if (number < 1 || number > counts[column]) continue;
+      if (continued ? number != last[column] : used[column].contains(number)) {
+        continue;
+      }
+      final continuesCount = continued || number == last[column] + 1;
+      placed[column] = number;
+      search(
+        index + 1,
+        column + 1,
+        score + (continuesCount ? 1 : 0),
+        width + counts[column],
+      );
+      placed[column] = null;
+    }
+  }
+
+  search(0, 0, 0, 0);
+  if (best == null && continued) {
+    return _assignModeColumns(numbers, counts, last, used, continued: false);
+  }
+  return best;
+}
+
+/// Builds one mode position's channel from the block(s) holding it: the
+/// function name from its name row (or, for a one-range function, from the
+/// head of that range's description), and the union of its ranges across a
+/// page break.
+_DetectedChannel _traitsChannel(List<_TraitsBlock> parts, int position) {
+  var label = parts.map((part) => part.label).nonNulls.firstOrNull;
+  final kept = <({int start, int end, String text})>[];
+  for (final part in parts) {
+    for (final range in part.ranges) {
+      if (kept.every(
+        (other) => range.end < other.start || range.start > other.end,
+      )) {
+        kept.add(range);
+      }
+    }
+  }
+  kept.sort((a, b) => a.start.compareTo(b.start));
+  final descriptions = [for (final range in kept) range.text];
+  if (label == null && kept.length == 1) {
+    // "Master Dimmer , 0 to 100%": the name, then what the range does.
+    final text = kept.single.text;
+    // ADJ separates the name from what the range does with " , ", and a
+    // name can hold a comma of its own ("LED Spot, Outboard Color").
+    final spaced = text.indexOf(' , ');
+    final comma = spaced >= 0 ? spaced : text.indexOf(',');
+    label = comma < 0 ? text : text.substring(0, comma);
+    descriptions[0] = comma < 0 ? '' : text.substring(comma + 1);
+  }
+  final name = _cleanFunction(label ?? '');
+  if (name.isEmpty) {
+    return _DetectedChannel(
+      name: 'Channel $position',
+      kind: 'generic',
+      ranges: [
+        for (var i = 0; i < kept.length; i++)
+          _traitsRange(
+            kept[i].start,
+            kept[i].end,
+            descriptions[i],
+            strobe: false,
+          ),
+      ],
+      confidence: .5,
+    );
+  }
+  final classified = _classifyTableChannel(name, position);
+  // "Red Laser" names an emitter, not a color-mixing component: keep a
+  // laser's on/off control out of colorIntensity, so nothing that drives
+  // color (a console's color picker, an RGB effect) can switch it on.
+  final laser = RegExp(r'\blaser\b', caseSensitive: false).hasMatch(name);
+  final kind = laser && classified.kind == 'colorIntensity'
+      ? 'generic'
+      : classified.kind;
+  return _DetectedChannel(
+    name: name,
+    kind: kind,
+    fineOf: classified.fineOf,
+    color: kind == 'colorIntensity' ? classified.color : null,
+    ranges: [
+      for (var i = 0; i < kept.length; i++)
+        _traitsRange(
+          kept[i].start,
+          kept[i].end,
+          descriptions[i],
+          strobe: kind == 'strobe',
+        ),
+    ],
+    gdtfAttribute: kind == classified.kind ? classified.gdtfAttribute : null,
+  );
+}
+
+/// [_matrixRange], except that a strobe channel's steady settings ("No
+/// strobe", "Off") stay out of the strobe safety class.
+DmxRange _traitsRange(
+  int start,
+  int end,
+  String description, {
+  required bool strobe,
+}) {
+  final range = _matrixRange(start, end, description);
+  final lower = range.name.toLowerCase();
+  final steady = RegExp(
+    r'^(?:no\s+(?:strobe|function)|off|open|closed|blackout)\b',
+  ).hasMatch(lower);
+  range.safety = (strobe || lower.contains('strobe')) && !steady
+      ? 'strobe'
+      : 'normal';
+  return range;
+}
+
 /// Runs every "several DMX modes as parallel position columns" table
 /// grammar this file recognizes and returns the first one that finds
 /// anything - a manual only ever uses one of these families, so there's no
@@ -2607,11 +3611,12 @@ List<_DetectedModeTable> _robeProtocolModeTables(String text) {
 /// scoring perfect footprint recall/precision on every real corpus fixture
 /// that uses it) or might only be a subset, leaving some of the document's
 /// personality groups printed in a still-unsupported table shape elsewhere
-/// (grammar 2 and Robe's grammar, both new). Callers don't currently fill
-/// that gap from the generic channel-count scan - a generic gap-fill pass
-/// used to live here but measured out net-negative on the eval corpus (see
-/// the call sites) - so `mayHaveGaps` for now only documents the caveat for
-/// a future, better-corroborated fill.
+/// (grammar 2, Robe's grammar and ADJ's `<N>-CH MODE` traits grammar, all
+/// new). Callers don't currently fill that gap from the generic
+/// channel-count scan - a generic gap-fill pass used to live here but
+/// measured out net-negative on the eval corpus (see the call sites) - so
+/// `mayHaveGaps` for now only documents the caveat for a future,
+/// better-corroborated fill.
 ({List<_DetectedModeTable> modes, bool mayHaveGaps}) _matrixLikeModeTables(
   String text,
 ) {
@@ -2621,6 +3626,8 @@ List<_DetectedModeTable> _robeProtocolModeTables(String text) {
   if (sparse.isNotEmpty) return (modes: sparse, mayHaveGaps: true);
   final robe = _robeProtocolModeTables(text);
   if (robe.isNotEmpty) return (modes: robe, mayHaveGaps: true);
+  final traits = _modeColumnTraitsTables(text);
+  if (traits.isNotEmpty) return (modes: traits, mayHaveGaps: true);
   // No mode-matrix grammar found anything at all - `mayHaveGaps` must stay
   // false here (not true), even though this is the "new, less-trusted
   // grammar" branch: a caller only reads `mayHaveGaps` once it already

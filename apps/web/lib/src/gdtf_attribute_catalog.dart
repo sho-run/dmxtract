@@ -99,7 +99,8 @@ String defaultGdtfAttribute(String kind, String? color) => switch (kind) {
   'prism' => 'Prism1',
   'frost' => 'Frost1',
   'speed' => 'GlobalMSpeed',
-  'effect' => 'Effects1',
+  'effect' || 'mode' => 'Effects1',
+  'colorTemperature' => 'CTC',
   'maintenance' => 'Function',
   _ => 'NoFeature',
 };

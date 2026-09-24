@@ -1,5 +1,7 @@
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
 import { wordsFromRecognizeData } from './tesseract_words.js';
+import { detailedOcrPages } from './ocr_pages.js';
+import { joinPositionedItems, withModeColumns } from './table_columns.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
 
@@ -173,19 +175,10 @@ function positionedText(content) {
     row.items.push(item);
   }
   rows.sort((a, b) => b.y - a.y);
-  return rows.map(row => {
-    row.items.sort((a, b) => a.x - b.x);
-    let text = '';
-    let right = null;
-    for (const item of row.items) {
-      const gap = right == null ? 0 : item.x - right;
-      text += right == null ? '' : gap > 18 ? '   ' : ' ';
-      text += item.text;
-      right = Math.max(right ?? item.x, item.x + item.width);
-    }
-    return text.trim();
-  }).filter(Boolean).join('\n');
+  for (const row of rows) row.items.sort((a, b) => a.x - b.x);
+  return withModeColumns(rows, joinPositionedItems).filter(Boolean).join('\n');
 }
+
 
 function positionedOcr(tsv) {
   if (!tsv) return '';
@@ -389,22 +382,11 @@ function tableRowCount(text) {
   return (text.match(/^\s*\d{1,3}\s+(?:\d{1,3}\s*[-–—]\s*\d{1,3}|[A-Za-z])/gm) || []).length;
 }
 
-function tableRangeCount(text) {
-  return (text.match(/\b\d{1,3}\s*[-–—]\s*\d{1,3}\b/g) || []).length;
-}
-
-function looksLikeDmxTable(text) {
-  return /(channel\s+value\s+table|dmx\s+channel\s+assignments(?:\s+and\s+values)?|dmx\s+charts?|dmx\s+traits|dmx\s+channels?|channel\s+dmx\s+function|\b[A-Z]{0,3}\s*\d{1,3}\s*[A-Z]{0,3}\s+channel\s+table\b)/i.test(text);
-}
-
-function tableHeadingCount(text) {
-  return (text.match(/\b[A-Z]{0,3}\s*\d{1,3}\s*[A-Z]{0,3}\s+channel\s+table\b/gi) || []).length;
-}
-
 async function extractPdf(bytes) {
   const pdfDocument = await pdfjs.getDocument({ data: bytes, wasmUrl: './vendor/pdfjs/wasm/' }).promise;
   let worker = null;
   const pages = [];
+  const ocrPages = new Set();
   const thumbnails = [];
   for (let number = 1; number <= pdfDocument.numPages; number += 1) {
     announce('Reading the manual', number, pdfDocument.numPages);
@@ -423,19 +405,14 @@ async function extractPdf(bytes) {
       announce('Looking for DMX tables', number, pdfDocument.numPages);
       const result = await worker.recognize(canvas);
       text = result.data.text || '';
+      ocrPages.add(number);
     }
     pages.push({ page: number, text });
   }
   if (worker) {
-    const detailedPages = new Set();
-    for (const page of pages) {
-      const headings = tableHeadingCount(page.text);
-      if (looksLikeDmxTable(page.text) && headings > 0 && headings <= 3) {
-        detailedPages.add(page.page);
-        if (page.page < pdfDocument.numPages) detailedPages.add(page.page + 1);
-      }
-      if (tableRangeCount(page.text) >= 5) detailedPages.add(page.page);
-    }
+    // A page whose text layer already holds its table is never re-read;
+    // see ocr_pages.js.
+    const detailedPages = detailedOcrPages(pages, ocrPages, pdfDocument.numPages);
     await worker.setParameters({
       tessedit_pageseg_mode: window.Tesseract.PSM.SINGLE_BLOCK,
       preserve_interword_spaces: '1',
