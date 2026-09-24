@@ -2923,6 +2923,161 @@ CHANNEL      CH: 06, 07, 08, 12                       DMX Channel Mode
     );
   });
 
+  test('does not let an unvalidated "150W" candidate win the tie or '
+      'poison the best score (Vangaa VG-LM150S)', () {
+    // Page 1 gives the model as "VG-LM150S", but also states it in words
+    // as "150W LED Moving Head Spot Light". Both recur verbatim in page
+    // 2's running header and each score a perfect (1.0) match there, and
+    // "150W LED Moving Head Spot Light" is the earlier of the two lines
+    // on page 1. "if (score <= bestScore) continue;" only replaces the
+    // current best on a strictly higher score, so on a tie whichever
+    // candidate was scored first keeps it. Two guards are what keep that
+    // earlier, invalid candidate from taking the win:
+    //  - modelLike's unit filter (the "&& !unit.hasMatch(token)" clause
+    //    alongside the digit check) keeps "150W..." from counting as
+    //    modelLike at all, since "150W" is its only digit and it is a
+    //    pure unit. Drop the filter, and the earlier "150W..." line wins
+    //    the tie over "VG-LM150S".
+    //  - "if (model != null && modelLike(model))" gates the "bestScore =
+    //    score;" assignment, so an invalid candidate can never raise
+    //    bestScore. The cover's "CE RoHS" line (sitting directly above
+    //    "User Manual") is what the title regex captures as [pick].
+    //    Moving that check so it no longer gates the assignment lets the
+    //    invalid "150W..." candidate raise bestScore to its maximum
+    //    before "VG-LM150S" is ever considered, locking [best] at null
+    //    for the rest of the scan and falling back to the raw,
+    //    uncorroborated "CE RoHS".
+    final fixture = fixtureFromManualText(
+      _vangaaVglm150sCoverExcerpt,
+      'Vangaa_VGLM150S_UM.pdf',
+    ).fixture;
+    expect(fixture.model, 'VG-LM150S');
+  });
+
+  test('keeps a DMX value range from reading as a model number (ADJ VIZI '
+      'XTREME DMX Traits)', () {
+    // The cover is a letter-tracked "A D J V I Z I X T R E M E - D M X
+    // T R A I T S" title, read via _modelFromLetterTrackedTraitsLine as
+    // "VIZIXTREME" — a lossy spelling particular to this glyph-tracked
+    // reader (contrast the plain-text "ADJ VIZI XTREME - DMX TRAITS"
+    // cover tested above, which reads as "VIZI XTREME" with a space).
+    // That exact spelling is not what this test pins, so it is checked
+    // loosely. Nothing among page 1's own candidate lines clears
+    // modelLike against page 4, so [pick] itself is returned as the
+    // model. Without modelLike's DMX-range guard (the
+    // "!RegExp(r'\d{1,3}[ \t]*[-–—~][ \t]*\d{1,3}').hasMatch(name)"
+    // clause), an ordinary traits-table row like "000-020 No Function"
+    // (page 4, DIM CURVES) — which does not contain "XTREME" — reads as
+    // a modelLike name too, and wins on similarity alone.
+    final fixture = fixtureFromManualText(
+      _viziXtremeDmxTraitsCoverExcerpt,
+      '15a2a6ff145475d6dd14364285982a4a87a4129d_ADJ_VIZI_XTREME___DMX_TRAITS'
+      '.pdf',
+    ).fixture;
+    expect(fixture.model, contains('XTREME'));
+  });
+
+  test('keeps a page-marker line out of the after-cover word scan (Robe '
+      'Robin Spikie)', () {
+    // The title regex takes the cover's OCR misread "Ad Innovative OR code
+    // for user manual", and "Robin Spikie" has no digit, so no run after
+    // the cover replaces it. Without the "if (isMarker(line)) continue;"
+    // guard, the "2" of the "=== DMXTRACT PAGE 2 ===" marker becomes a
+    // word and "2 Robin Spikie" wins. This asserts only that no page
+    // number leaks into the model; the misread title itself is not
+    // pinned here.
+    final fixture = fixtureFromManualText(
+      _robinSpikieCoverExcerpt,
+      'Robe_RobinSpikie_UM.pdf',
+    ).fixture;
+    expect(fixture.model, isNot(matches(RegExp(r'^\d+ '))));
+  });
+
+  test('breaks a similarity tie in favor of the earlier-processed cover '
+      'line (Robe Footsie1/Footsie2)', () {
+    // This manual's cover and page 2 both name "Footsie1" before
+    // "Footsie2" (one manual covers both variants). Each scores an equally
+    // perfect match against its own mentions after the cover, so
+    // "if (score <= bestScore) continue;" is what keeps the first
+    // (Footsie1) rather than let the later-processed, equally-scored
+    // Footsie2 line overwrite it. Loosen it to "score < bestScore" and the
+    // tie goes to Footsie2 instead.
+    final fixture = fixtureFromManualText(
+      _robinFootsie1CoverExcerpt,
+      'Robe_Footsie1_UM.pdf',
+    ).fixture;
+    expect(fixture.model, 'Robin Footsie1');
+  });
+
+  test('never lets a digit-less name win the after-cover match (BeamZ '
+      'BT400)', () {
+    // "BT400" appears once, on the cover, and never recurs in this
+    // excerpt, so nothing corroborates it and [pick] is returned as-is. A
+    // Polish sentence on page 31 wraps "...Skontaktuj się z" onto one
+    // printed line and "Beamz lub..." onto the next — two consecutive
+    // lines of the same paragraph, not a page boundary. The after-cover
+    // word scan joins each line's words with a space but keeps no record
+    // of where one line ended and the next began, so that ordinary line
+    // wrap reads exactly like the two words "z Beamz" in a row — a
+    // deceptively strong (but digit-less) similarity match for the
+    // cover's "7 BEAMZ" logo line. "if (model != null &&
+    // modelLike(model))" is what keeps a name with no model number from
+    // ever winning; drop the modelLike half and "z Beamz" beats "BT400".
+    final fixture = fixtureFromManualText(
+      _beamzBt400CoverExcerpt,
+      'BeamZ_BT400_UM.pdf',
+    ).fixture;
+    expect(fixture.model, 'BT400');
+  });
+
+  test('reaches past a digit-less cover line to find its corroborating '
+      'number (Showtec IP Pixel Controller)', () {
+    // The cover names the product "IP Pixel Controller" with no digit of
+    // its own, so it cannot pass modelLike on its own. Page 5 repeats
+    // "IP Pixel Controller" as a running header directly above its own
+    // "1.   Introduction" section heading; the digit-less cover line
+    // takes in that neighboring "1" the way the doc comment on
+    // _corroboratedModel describes, producing "IP Pixel Controller 1" —
+    // a bogus "1" this test does not pin. What the test does pin: the
+    // search tries window sizes "tokens.length - 1" through
+    // "tokens.length + 1", and it is the "+ 1" that reaches one token
+    // past "IP Pixel Controller" to pick up that neighboring "1" at all.
+    // Narrow the search to "tokens.length" only, and no window reaches
+    // far enough to find it, so no candidate is accepted and [pick] is
+    // returned unchanged: "• •", which the title regex takes from
+    // page 5's "• • User manual" line.
+    final fixture = fixtureFromManualText(
+      _showtecIpPixelControllerCoverExcerpt,
+      'Showtec_IPPixelController_UM.pdf',
+    ).fixture;
+    expect(fixture.model, startsWith('IP Pixel Controller'));
+  });
+
+  test('requires a similarity score strictly greater than .8, not merely '
+      'as high (ADJ VIZI XTREME DMX Traits)', () {
+    // Page 1's own "FUNCTION" line (a lone word, wrapped onto its own
+    // line in the table header) and page 6's trailing "...No Function"
+    // immediately followed by that page's own footer digit "6" — again
+    // two tokens landing next to each other only because the after-cover
+    // word scan keeps no line-boundary information — land at exactly
+    // 0.8 similarity ("function" vs "function 6": 2 edits over 10
+    // characters). "var bestScore = .8;" together with
+    // "if (score <= bestScore) continue;" makes that comparison strict,
+    // so an exact-0.8 candidate never wins and [pick] ("VIZIXTREME", see
+    // the letter-tracked-cover test above) is returned unchanged. Lower
+    // the threshold by even one part in ten-thousand (.8 to .7999) and
+    // that same exact-0.8 match now clears it, producing "Function 6".
+    // Like the DMX-range test above, this checks contains('XTREME')
+    // rather than either spelling, but it pins a different guard:
+    // "Function 6" does not contain "XTREME".
+    final fixture = fixtureFromManualText(
+      _viziXtremeThresholdExcerpt,
+      '15a2a6ff145475d6dd14364285982a4a87a4129d_ADJ_VIZI_XTREME___DMX_TRAITS'
+      '.pdf',
+    ).fixture;
+    expect(fixture.model, contains('XTREME'));
+  });
+
   test('folds extraction-only channel kinds onto the fixture schema', () {
     // The Rust core rejects a kind outside schemas/fixture-v1.json's
     // ChannelKind enum as invalid JSON, which used to fail validation and
@@ -5281,4 +5436,501 @@ lj] | (Q2SQQ@O 0}
 — Se) o ‘MXN ‘OM IN ‘bMx our ‘omex our —
 |_lo \ = Cex |_|
 10
+''';
+
+/// The Vangaa VG-LM150S manual's cover (page 1) and page 2, verbatim from
+/// this app's text pass.
+const _vangaaVglm150sCoverExcerpt = r'''
+=== DMXTRACT PAGE 1 ===
+VG-LM150S 150W LED Moving Head Spot Light User Manual   VG-LM150S 150W LED Moving Head Spot Light User Manual
+150W LED Moving Head Spot Light
+VG-LM150S
+CE RoHS
+User Manual
+ Please read this user manual before using this product ！
+Keep it for further reference!
+http://www. vangaa.com
+
+=== DMXTRACT PAGE 2 ===
+VG-LM150S 150W LED Moving Head Spot Light User Manual   VG-LM150S 150W LED Moving Head Spot Light User Manual
+Ⅰ GENERAL
+INDEX   Thank you for using our product! Please read this manual carefully and completely. For
+technical reference in future, please keep this user manual well. This user manual contains
+all installation and operation information of this 150W LED Moving Head Spot Light, it’s very
+useful for user to install and operate the light. Please strictly abide by the relevant
+Ⅰ GENERAL ......................................................................................................01   instruction for the installation and operation.
+This light has very beautiful appearance. Our 150W LED Moving Spot Head is a very small
+Ⅱ SAFETY INFORMATION ............................................................................02
+and smart light. But the brightness is very powerful. It owns very good light output, and
+very wonderful gobo effect. As a led spot moving head light, it’s small, but it runs extremely
+Ⅲ OPERATION INSTRUCTIONS ..................................................................03
+fast. This light is very suitable for bar, disco, stage, theatre, decoration etc.
+Ⅳ DIMENSION AND LUX ...............................................................................04
+This light meets the following criteria:
+GB7000.1-2007/IEC60598-1:2003
+Ⅴ INSTALLATION AND CONNECTION.......................................................05
+GB7000.217-2008/IEC60598-2-17:1984+A2:1990
+Ⅵ OPERATION AND CONTROL ...................................................................07
+Once receiving a fixture, carefully unpack the carton, check the contents to ensure that all
+parts are presented, and have been received in a good condition. Notify the shipper
+Ⅶ DMX CHANNEL CHART .............................................................................09   immediately and retain packing material for inspection if any parts appear damaged from
+shipping or the carton itself shows, sign of mishandling. Save the carton and all packing
+Ⅷ DMX CHANNEL CHART .............................................................................19   materials. In the event that a fixture must be returned to the factory, it is important that the
+fixture be returned in the original factory box and packing.
+Ⅸ TROUBLE SHOOTING ................................................................................20   FO-LM150A-------------1pc
+Signal Cable------------1pc
+Ⅹ MAINTENANCE AND CLEANING ............................................................21   Power Cable ------------1pc
+User Manual-------------1pc
+01
+
+''';
+
+/// The ADJ VIZI XTREME DMX Traits manual's page 1 and page 4, verbatim
+/// from this app's text pass.
+const _viziXtremeDmxTraitsCoverExcerpt = r'''
+=== DMXTRACT PAGE 1 ===
+A D J V I Z I X T R E M E - D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+28Ch   40Ch   73Ch   54Ch   63Ch VALUES
+1   1   1   1   1   000-255 Pan Movement 8bit , 540/630 Degrees
+–   2   2   2   2   000-255 Pan Fine Movement 16bit
+2   3   3   3   3   000-255 Tilt Movement 8bit , 270 Degrees
+–   4   4   4   4   000-255 Tilt Fine Movement 16bit
+Continuous Pan
+000-127 No function
+–   5   5   5   5   128-190 Clockwise rotation (CW) , from slow to fast
+191-192 Stop
+193-255 Counterclockwise rotation (CCW), from fast to slow
+Continuous Tilt
+000-127 No function
+–   6   6   6   6   128-190 Clockwise rotation (CW) , from slow to fast
+191-192 Stop
+193-255 Counterclockwise rotation (CCW), from fast to slow
+3   7   –   –   –   000‐255 Red , 0% ‐ 100%
+4   8   –   –   –   000‐255 Green , 0% ‐ 100%
+5   9   –   –   –   000‐255 Blue , 0% ‐ 100%
+6   10   –   –   –   000‐255 Lime , 0% ‐ 100%
+–   –   7   –   –   000‐255 Red 1 , 0% ‐ 100%
+–   –   8   –   –   000‐255 Green 1 , 0% ‐ 100%
+–   –   9   –   –   000‐255 Blue 1 , 0% ‐ 100%
+–   –   10   –   –   000‐255 Lime 1 , 0% ‐ 100%
+…   …
+–   –   19   –   –   000‐255 Red 4 , 0% ‐ 100%
+–   –   20   –   –   000‐255 Green 4 , 0% ‐ 100%
+–   –   21   –   –   000‐255 Blue 4 , 0% ‐ 100%
+–   –   22   –   –   000‐255 Lime 4 , 0% ‐ 100%
+–   –   –   7   7   000-255 CYAN (0-100% Cyan)
+–   –   –   –   8   000-255 CYAN FINE:
+–   –   –   8   9   000-255 MAGENTA (0-100% Magenta)
+–   –   –   –   10   000-255 MAGENTA FINE:
+–   –   –   9   11   000-255 YELLOW (0-100% Yellow)
+–   –   –   –   12   000-257 YELLOW FINE:
+–   11   23   10   13   000‐255 COLOR TEMPERATURE LINEAR 2,700-10,000K
+COLOR TEMPERATURE PRESETS
+0   No function
+001-060 2700K
+061-179 3000K
+180-201 3200K
+202-207 4000K
+7   12   24   11   14
+208-229 4500K
+230-234 5000K
+235-239 5600K
+240-244 6500K
+245-249 8000K
+250-255 10000K
+COLOR TEMPERATURE RED to GREEN
+–   –   25   12   15   0   No function
+001-255 Shift CT Red to Green
+8   13   26   13   16   000‐255 64 COLOR MACROS (See Color Macros Chart)
+1
+
+=== DMXTRACT PAGE 4 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+28Ch   40Ch   73Ch   54Ch   63Ch VALUES
+DIMMING SPEED
+141   0.1 s
+142   0.2 s
+143   0.3 s
+144   0.4 s
+145   0.5 s
+146   0.6 s
+147   0.7 s
+148   0.8 s
+149   0.9 s
+150   1 s
+–   34   67   51   57
+151   1.5 s
+152   2 s
+153   3 s
+154   4 s
+155   5 s
+156   6 s
+157   7 s
+158   8 s
+159   9 s
+160   10 s
+161-255 Default to Unit Setting
+DIM CURVES
+000-020 No Function
+021-040 Linear
+–   35   68   52   58   041-060 Square
+061-080 Inv. Squa
+081-100 S. Curve
+101-255 No Function
+INTERNAL PROGRAMS
+000-009 No Function
+010-019 Program 1
+020-029 Program 2
+030-039 Program 3
+24   36   69   –   59   040-049 Program 4
+050-059 Program 5
+060-069 Program 6
+070-079 Program 7
+080-089 Program 8
+090-255 No Function
+25   37   70   –   60   000-255 PROGRAM SPEED , Slow to Fast
+26   38   71   –   61   000-255 PROGRAM FADE, Min to Max
+27   39   72   53   62   000-255 PAN / TILT SPEED, Max to Min
+4
+
+''';
+
+/// The Robe Robin Spikie manual's cover (page 1) and page 2, verbatim
+/// from this app's text pass.
+const _robinSpikieCoverExcerpt = r'''
+=== DMXTRACT PAGE 1 ===
+ROBG
+ROBIN* Spikie
+SO)
+Wt. (hoy
+a {| py
+a=
+ie
+SE
+| [im BE
+Ad Innovative OR code for user manual
+Technology ol Fm]
+USER MANUAL
+ROBE’ lighting s.r.o.e Czech Republic e www.rabe.cz
+
+
+=== DMXTRACT PAGE 2 ===
+Robin Spikie
+Table of contents
+1. Safety instructions ......................................................................................................... 3
+2. Fixture exterior view ...................................................................................................... 5
+3. Installation ....................................................................................................................... 6
+3.1 Connection to the mains ............................................................................................ 6
+3.2 Rigging the fixture ...................................................................................................... 7
+3.3 DMX-512 connection .................................................................................................. 9
+3.4. Wireless DMX operation ......................................................................................... 10
+4. Remotely controllable functions ................................................................................. 11
+5. Control menu map ........................................................................................................ 13
+6. Control menu ............................................................................................................... 15
+6.1 Addressing (DMXA) .................................................................................................. 15
+6.2 Fixture information (Info) .......................................................................................... 15
+6.3 Personality (Pers) ..................................................................................................... 16
+6.4 Manual Control (Manual) .......................................................................................... 17
+6.5 Test program (Test Prg) ............................................................................................ 17
+6.6 Stand-alone (St Alone) ............................................................................................. 17
+6.7 Reset ........................................................................................................................ 18
+6.8 Special functions (Special) ....................................................................................... 18
+7. RDM ............................................................................................................................... 21
+8. Error and information messages ................................................................................ 22
+9 . Technical Specifications .............................................................................................. 23
+10. Maintenance and cleaning ......................................................................................... 25
+10.1 Replacing the fuse ................................................................................................. 26
+10.2 Cleaning of the air filtr ............................................................................................ 27
+10.3 Checking plastic parts of the fixture........................................................................27
+10.4 Disposing of the product ........................................................................................ 27
+11. Photometric diagrams ................................................................................................ 28
+12. ChangeLog ................................................................................................................. 32
+2
+
+''';
+
+/// The Robe Footsie1/Footsie2 combined manual's cover (page 1) and page 2,
+/// verbatim from this app's text pass.
+const _robinFootsie1CoverExcerpt = r'''
+=== DMXTRACT PAGE 1 ===
+ROBG
+ROBIN Footsie1"
+ROBIN Footsie2"
+[= BE
+Innovative
+Technology QR code for user manual
+li 7 El
+es tid
+USER MANUAL ee 4
+ele
+ROBE? lighting s.r.o.e Czech Republic « www.robe.cz
+Version 1.7
+
+
+=== DMXTRACT PAGE 2 ===
+Robin Footsie1
+Robin Footsie2
+Table of contents
+1. Safety instructions ......................................................................................................... 3
+2. Operating determination ................................................................................................ 4
+3. Fixture exterior view ...................................................................................................... 6
+4. Installation ....................................................................................................................... 8
+4.1 Connection to the mains ............................................................................................ 8
+4.2 Connecting Footsies .................................................................................................. 9
+4.3 Diffusion filter installation .......................................................................................... 11
+4.4 Footsie permanent installation...................................................................................12
+5. DMX operation .............................................................................................................. 13
+6. Control menu map ........................................................................................................ 14
+7. Control menu ............................................................................................................... 16
+7.1 DMXA (Addressing) .................................................................................................. 17
+7.2 Info (Fixture information) .......................................................................................... 17
+7.3 Pers (Personality) ..................................................................................................... 19
+7.4 Manual (Manual Control) .......................................................................................... 19
+7.5 Test Prg (Test program) ............................................................................................ 19
+7.6 St Alone (Stand-alone) ............................................................................................. 19
+7.7 Reset ........................................................................................................................ 20
+7.8 Special (Special functions) ....................................................................................... 20
+8. RDM ............................................................................................................................... 22
+9. NFC ................................................................................................................................ 23
+10. Error and information messages .............................................................................. 24
+11. Technical Specifications ............................................................................................ 25
+12. ChangeLog .................................................................................................................. 29
+2
+
+''';
+
+/// The BeamZ BT400 manual's cover (page 1) and page 31, verbatim from
+/// this app's text pass.
+const _beamzBt400CoverExcerpt = r'''
+=== DMXTRACT PAGE 1 ===
+Pocscccssssescssssessss3s: RabeamZ
+
+i
+
+i
+
+_ @
+
+i
+
+i
+
+7 BEAMZ
+MADE
+EAZY
+BT400
+
+USER MANUAL
+
+
+=== DMXTRACT PAGE 31 ===
+Poniższa lista kontrolna może pomóc w rozwiązaniu problemu w mało prawdopodobnym przypadku wystąpienia problemu podczas korzystania z
+produktu:
+Ż   Ł
+Brak odpowiedzi z urządzenia.   Brak zasilania urządzenia.   Sprawdź, czy zasilanie jest włączone.
+Sprawdź kable i połączenia.
+Błąd wewnętrzny.   Skontaktować się z pomocą techniczną Beamz lub
+autoryzowanym partnerem serwisowym Beamz. Nie
+zdejmuj osłon podstawy lub jarzma. Nie należy wymieniać
+bezpieczników ani przeprowadzać napraw lub usług, które
+nie są opisane w niniejszej instrukcji obsługi, chyba że
+posiadasz autoryzację od Beamz lub autoryzowanego
+partnera serwisowego Beamz.
+Urządzenie resetuje się prawidłowo, ale Kontroler nie jest podłączony.   Podłącz kontroler.
+nie reaguje (lub nie reaguje poprawnie)
+na kontroler.   Zła linia DMX.   Sprawdź połączenia i kable. Popraw nieprawidłowe
+połączenia. Napraw lub wymień uszkodzone kable.
+Linia DMX nie ma oporności końcowej.   Włóż wtyczkę terminatora DMX do gniazda wyjścia danych
+ostatniego urządzenia na linii DMX.
+Niepoprawne adresowanie urządzeń.   Sprawdź adres urządzenia i ustawienia trybu DMX.
+Urządzenie jest wadliwe i zakłóca   Odłącz złącza DMX IN i OUT i podłącz je bezpośrednio, aby
+transmisję danych na linii DMX.   ominąć jedno urządzenie naraz, aż do odzyskania normalnej
+pracy. Zlecić wadliwe urządzenie serwisowe
+upoważnionemu technikowi.
+Pin 2 i 3 są odwrócone w połączeniu XLR. Sprawdź połączenia i kable. Zamontuj kabel zmiany fazy
+pomiędzy urządzeniami lub sworzniem zamieniającym 2 i 3
+w urządzeniu, które zachowuje się chaotycznie.
+Błąd po zresetowaniu urządzenia.   Efekt wymaga mechanicznej regulacji.   Sprawdź wersję oprogramowania i komunikaty o błędach
+urządzenia, aby uzyskać więcej informacji. Skontaktuj się z
+Beamz lub autoryzowanym partnerem serwisowym Beamz.
+Strumień świetlny odcina się z   Urządzenie zbyt gorące.   Pozwól urządzeniu ostygnąć. Zmniejsz temperaturę
+przerwami.   otoczenia. Zapewnij swobodny przepływ powietrza wokół
+oprawy. W razie potrzeby wyczyść urządzenie.
+Diody LED uszkodzone.   Odłącz urządzenie i skontaktuj się z pomocą techniczną
+Beamz lub autoryzowanym partnerem serwisowym Beamz.
+Ustawienia zasilania nie   Odłącz urządzenie. Sprawdź ustawienia i
+pasuje do lokalnego napięcia   poprawić w razie potrzeby.
+przemiennego i częstotliwości.
+
+''';
+
+/// The Showtec IP Pixel Controller manual's cover (page 1) and page 5,
+/// verbatim from this app's text pass.
+const _showtecIpPixelControllerCoverExcerpt = r'''
+=== DMXTRACT PAGE 1 ===
+USER MANUAL
+ENGLISH
+V1.0
+IP Pixel Controller
+Product code: 44511
+For IP Pixelstrip 40/80
+c   c   c
+
+=== DMXTRACT PAGE 5 ===
+IP Pixel Controller
+1.   Introduction
+1.1. Before Using the Product
+Important
+Read and follow the instructions in this user manual before installing, operating or servicing
+this product.
+The manufacturer will not accept liability for any resulting damages caused by the non-observance of this
+manual.
+After unpacking, check the contents of the box. If any parts are missing or damaged, contact your Highlite
+International dealer.
+Your shipment includes:
+Figure 1
+• • Showtec IP Pixel Controller
+• • Quick-lock bracket
+• • Schuko to Power Pro True cable (1,5 m)
+• • User manual
+1.2. Intended Use
+This device is intended for professional use as an IP Pixel controller. It can be installed indoors and outdoors. This
+device is not suitable for households.
+Any other use, not mentioned under intended use, is regarded as non-intended and incorrect use.
+1.3. Product Lifespan
+This device is not designed for permanent operation.
+Disconnect the device from the electrical power supply when the device is not in operation. This will reduce
+the wear and will improve the lifespan of the device.
+1.4. Text Conventions
+Throughout the user manual the following text conventions are used:
+• • Buttons:   All buttons are in bold lettering, for example "Press the UP/DOWN buttons"
+• • References:   References to parts of the device are in bold lettering, for example: "turn the adjustment
+handle (05) ". References to chapters are hyperlinked
+• • 0–255:   Defines a range of values
+• • Notes:   Note: (in bold lettering) is followed by useful information or tips
+c   4   Product code: 44511
+
+''';
+
+/// The ADJ VIZI XTREME DMX Traits manual's page 1 and page 6, verbatim
+/// from this app's text pass.
+const _viziXtremeThresholdExcerpt = r'''
+=== DMXTRACT PAGE 1 ===
+A D J V I Z I X T R E M E - D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+28Ch   40Ch   73Ch   54Ch   63Ch VALUES
+1   1   1   1   1   000-255 Pan Movement 8bit , 540/630 Degrees
+–   2   2   2   2   000-255 Pan Fine Movement 16bit
+2   3   3   3   3   000-255 Tilt Movement 8bit , 270 Degrees
+–   4   4   4   4   000-255 Tilt Fine Movement 16bit
+Continuous Pan
+000-127 No function
+–   5   5   5   5   128-190 Clockwise rotation (CW) , from slow to fast
+191-192 Stop
+193-255 Counterclockwise rotation (CCW), from fast to slow
+Continuous Tilt
+000-127 No function
+–   6   6   6   6   128-190 Clockwise rotation (CW) , from slow to fast
+191-192 Stop
+193-255 Counterclockwise rotation (CCW), from fast to slow
+3   7   –   –   –   000‐255 Red , 0% ‐ 100%
+4   8   –   –   –   000‐255 Green , 0% ‐ 100%
+5   9   –   –   –   000‐255 Blue , 0% ‐ 100%
+6   10   –   –   –   000‐255 Lime , 0% ‐ 100%
+–   –   7   –   –   000‐255 Red 1 , 0% ‐ 100%
+–   –   8   –   –   000‐255 Green 1 , 0% ‐ 100%
+–   –   9   –   –   000‐255 Blue 1 , 0% ‐ 100%
+–   –   10   –   –   000‐255 Lime 1 , 0% ‐ 100%
+…   …
+–   –   19   –   –   000‐255 Red 4 , 0% ‐ 100%
+–   –   20   –   –   000‐255 Green 4 , 0% ‐ 100%
+–   –   21   –   –   000‐255 Blue 4 , 0% ‐ 100%
+–   –   22   –   –   000‐255 Lime 4 , 0% ‐ 100%
+–   –   –   7   7   000-255 CYAN (0-100% Cyan)
+–   –   –   –   8   000-255 CYAN FINE:
+–   –   –   8   9   000-255 MAGENTA (0-100% Magenta)
+–   –   –   –   10   000-255 MAGENTA FINE:
+–   –   –   9   11   000-255 YELLOW (0-100% Yellow)
+–   –   –   –   12   000-257 YELLOW FINE:
+–   11   23   10   13   000‐255 COLOR TEMPERATURE LINEAR 2,700-10,000K
+COLOR TEMPERATURE PRESETS
+0   No function
+001-060 2700K
+061-179 3000K
+180-201 3200K
+202-207 4000K
+7   12   24   11   14
+208-229 4500K
+230-234 5000K
+235-239 5600K
+240-244 6500K
+245-249 8000K
+250-255 10000K
+COLOR TEMPERATURE RED to GREEN
+–   –   25   12   15   0   No function
+001-255 Shift CT Red to Green
+8   13   26   13   16   000‐255 64 COLOR MACROS (See Color Macros Chart)
+1
+
+=== DMXTRACT PAGE 6 ===
+D M X T R A I T S
+CHANNEL   DMX
+FUNCTION
+28Ch   40Ch   73Ch   54Ch   63Ch VALUES
+SPECIAL FUNCTION
+058-058 1370 Hz LED Refresh Rate
+059-059 1380 Hz LED Refresh Rate
+060-060 1390 Hz LED Refresh Rate
+061-061 1400 Hz LED Refresh Rate
+062-062 1410 Hz LED Refresh Rate
+063-063 1420 Hz LED Refresh Rate
+064-064 1430 Hz LED Refresh Rate
+065-065 1440 Hz LED Refresh Rate
+066-066 1450 Hz LED Refresh Rate
+067-067 1460 Hz LED Refresh Rate
+068-068 1470 Hz LED Refresh Rate
+069-069 1480 Hz LED Refresh Rate
+070-070 1490 Hz LED Refresh Rate
+071-071 1500 Hz LED Refresh Rate
+072-072 2500 Hz LED Refresh Rate
+073-073 4000 Hz LED Refresh Rate
+074-074 5000 Hz LED Refresh Rate
+075-075 6000 Hz LED Refresh Rate
+076-076 10K Hz LED Refresh Rate
+077-077 15K Hz LED Refresh Rate
+078-078 20K Hz LED Refresh Rate
+079-079 25K Hz LED Refresh Rate
+080-089 Enable Blackout while Pan/Tilt moving
+28   40   73   54   63   090-099 Disable Blackout while Pan/Tilt moving
+100-105 Fan Mode Auto (Hold 3s)
+106-111 Fan Mode High (Hold 3s)
+112-117 Fan Mode Low (Hold 3s)
+118-122 Fan Mode Mute (Hold 3s)
+123-127 Enable Pan Invert (Hold 3s)
+128-132 Disable Pan Invert (Hold 3s)
+133-139 Enable Tilt Invert (Hold 3s)
+140-149 Disable Tilt Invert (Hold 3s)
+150-159 Reset All
+160-169 Reset Pan/Tilt
+170-174 Reset Effect
+175-179 Enable Zoom Speed Fast
+180-182 Disable Zoom Speed Fast
+183-185 Enable White Calibration (Hold 3s)
+186-189 Enable White Fixed Values (Hold 3s)
+190-193 Enable Limited Zoom Mode (Hold 3s)
+194-197 Disable Limited Zoom Mode (Hold 3s)
+198-201 Enable Hibernation 15minutes (Hold 3s)
+202-205 Disable Hibernation (Hold 3s)
+206-209 Aria Enable (Hold 3s)
+210-212 Aria Disable (Hold 3s)
+213-215 Display Backlight ON (Hold 3s)
+216-218 Display Backlight OFF (Hold 3s)
+219-255 No Function
+6
+
 ''';
