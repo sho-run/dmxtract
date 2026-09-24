@@ -6,11 +6,13 @@ class ExtractedManual {
     required this.pageCount,
     this.thumbnails = const [],
     this.rotations = const [],
+    this.ocrFailedPages = const [],
   });
   final String text;
   final int pageCount;
   final List<String> thumbnails;
   final List<int> rotations;
+  final List<int> ocrFailedPages;
 }
 
 Future<ExtractedManual> extractManual(Uint8List bytes, String mime) =>

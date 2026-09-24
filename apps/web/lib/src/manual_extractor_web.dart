@@ -23,6 +23,7 @@ class ExtractedManual {
     required this.pageCount,
     this.thumbnails = const [],
     this.rotations = const [],
+    this.ocrFailedPages = const [],
   });
   final String text;
   final int pageCount;
@@ -35,6 +36,13 @@ class ExtractedManual {
   /// amount, or the box the user drew over the (rotated) thumbnail lands on
   /// the wrong pixels of the (unrotated) original.
   final List<int> rotations;
+
+  /// The pages (1-based, in page order) whose latest OCR read in
+  /// manual_extractor.js failed, on the first read or the detailed table
+  /// pass. A page keeps what it had before that read: its text layer, often
+  /// empty, or its first read's OCR. Anything printed only there may be
+  /// missing.
+  final List<int> ocrFailedPages;
 }
 
 Future<ExtractedManual> extractManual(Uint8List bytes, String mime) async {
@@ -53,6 +61,10 @@ Future<ExtractedManual> extractManual(Uint8List bytes, String mime) async {
     rotations: pages
         .map((page) => (page as Map)['rotation'] as int? ?? 0)
         .toList(),
+    ocrFailedPages: [
+      for (final page in json['ocrFailedPages'] as List? ?? const [])
+        page as int,
+    ],
   );
 }
 

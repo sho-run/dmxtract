@@ -1,6 +1,7 @@
 import * as pdfjs from './vendor/pdfjs/pdf.min.mjs';
 import { wordsFromRecognizeData } from './tesseract_words.js';
 import { detailedOcrPages } from './ocr_pages.js';
+import { ocrGuard } from './ocr_guard.js';
 import { joinPositionedItems, withModeColumns } from './table_columns.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdfjs/pdf.worker.min.mjs';
@@ -384,10 +385,12 @@ function tableRowCount(text) {
 
 async function extractPdf(bytes) {
   const pdfDocument = await pdfjs.getDocument({ data: bytes, wasmUrl: './vendor/pdfjs/wasm/' }).promise;
-  let worker = null;
+  // An OCR failure costs only the page it happened on; see ocr_guard.js.
+  const ocr = ocrGuard(ocrWorker);
   const pages = [];
   const ocrPages = new Set();
   const thumbnails = [];
+  let ocrNeeded = false;
   for (let number = 1; number <= pdfDocument.numPages; number += 1) {
     announce('Reading the manual', number, pdfDocument.numPages);
     const page = await pdfDocument.getPage(number);
@@ -401,35 +404,43 @@ async function extractPdf(bytes) {
     await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
     thumbnails.push(await canvasToThumbnail(canvas));
     if (needsOcr) {
-      worker ||= await ocrWorker();
+      ocrNeeded = true;
       announce('Looking for DMX tables', number, pdfDocument.numPages);
-      const result = await worker.recognize(canvas);
-      text = result.data.text || '';
-      ocrPages.add(number);
+      const read = await ocr.read(number, text, async worker => (await worker.recognize(canvas)).data.text || '');
+      text = read.value;
+      if (read.ocr) ocrPages.add(number);
     }
     pages.push({ page: number, text });
   }
-  if (worker) {
+  if (ocrNeeded) {
     // A page whose text layer already holds its table is never re-read;
     // see ocr_pages.js.
     const detailedPages = detailedOcrPages(pages, ocrPages, pdfDocument.numPages);
-    await worker.setParameters({
+    await ocr.read(null, null, worker => worker.setParameters({
       tessedit_pageseg_mode: window.Tesseract.PSM.SINGLE_BLOCK,
       preserve_interword_spaces: '1',
-    });
+    }));
     for (const number of detailedPages) {
-      announce('Reading the DMX table carefully', number, pdfDocument.numPages);
-      const page = await pdfDocument.getPage(number);
-      const viewport = page.getViewport({ scale: 3.2 });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.ceil(viewport.width);
-      canvas.height = Math.ceil(viewport.height);
-      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-      const result = await worker.recognize(
-        removeTableLines(canvas),
+      // Without a worker (its start failed) the read below fails at once and
+      // lists the page, so the page is not rendered for it.
+      let cleaned = null;
+      if (ocr.worker) {
+        announce('Reading the DMX table carefully', number, pdfDocument.numPages);
+        const page = await pdfDocument.getPage(number);
+        const viewport = page.getViewport({ scale: 3.2 });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        cleaned = removeTableLines(canvas);
+      }
+      const read = await ocr.read(number, null, worker => worker.recognize(
+        cleaned,
         {},
         { text: true, tsv: true },
-      );
+      ));
+      if (!read.ocr) continue;
+      const result = read.value;
       const current = pages[number - 1];
       const detailed = positionedOcr(result.data.tsv) || result.data.text || '';
       if (tableTextScore(detailed) >= tableTextScore(current.text) * 0.7) {
@@ -442,8 +453,14 @@ async function extractPdf(bytes) {
       }
     }
   }
-  if (worker) await worker.terminate();
-  return { pageCount: pdfDocument.numPages, pages, thumbnails };
+  try {
+    await ocr.worker?.terminate();
+  } catch {
+    // A worker that won't shut down cleanly has already done its reading.
+  }
+  // The app tells the user which pages OCR could not read, each keeping
+  // what it had before that read, rather than failing the whole manual.
+  return { pageCount: pdfDocument.numPages, pages, thumbnails, ocrFailedPages: ocr.failedPages };
 }
 
 async function extractImage(bytes, mime) {

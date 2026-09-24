@@ -42,6 +42,31 @@ class _ManualPageSource {
   final int rotation;
 }
 
+/// The Check-step note for the pages manual_extractor.js could not OCR
+/// ([ExtractedManual.ocrFailedPages], in page order), or null for none.
+/// Consecutive pages read as a range: "pages 1, 3 and 7–21".
+String? unreadPagesNote(List<int> pages) {
+  if (pages.isEmpty) return null;
+  final runs = <String>[];
+  var start = 0;
+  while (start < pages.length) {
+    var end = start;
+    while (end + 1 < pages.length && pages[end + 1] == pages[end] + 1) {
+      end++;
+    }
+    runs.add(
+      end == start ? '${pages[start]}' : '${pages[start]}–${pages[end]}',
+    );
+    start = end + 1;
+  }
+  final listed = runs.length == 1
+      ? runs.single
+      : '${runs.sublist(0, runs.length - 1).join(', ')} and ${runs.last}';
+  final noun = pages.length == 1 ? 'page' : 'pages';
+  return 'We could not fully read $noun $listed, so anything printed only '
+      'there may be missing. Choosing the manual again may fix this.';
+}
+
 class DmxtractState extends ChangeNotifier {
   DmxtractState({GdtfLookupClient? lookupClient, http.Client? httpClient})
     : _lookupClient = lookupClient ?? GdtfLookupClient(),
@@ -92,6 +117,10 @@ class DmxtractState extends ChangeNotifier {
   Uint8List? _manualBytes;
   String? _manualMime;
   String _manualText = '';
+
+  /// [unreadPagesNote] for the manual in [_manualText], kept at the head of
+  /// [questions] when a drawn box re-reads a table.
+  String? _unreadPagesNote;
   List<_ManualPageSource> _pageSources = [];
   final http.Client _httpClient;
   PhoneLinkSession? _phoneLinkSession;
@@ -236,6 +265,7 @@ class DmxtractState extends ChangeNotifier {
         }
       }
       _manualText = text.join('\n\n');
+      _unreadPagesNote = null;
       manualName = photos.length == 1
           ? photos.first.name
           : '${photos.first.name} and ${photos.length - 1} more photos';
@@ -282,6 +312,7 @@ class DmxtractState extends ChangeNotifier {
           jsonDecode(utf8.decode(bytes)) as Map<String, Object?>,
         );
         questions = const [];
+        _unreadPagesNote = null;
         pageCount = 0;
         thumbnails = const [];
         needsRegion = false;
@@ -293,6 +324,7 @@ class DmxtractState extends ChangeNotifier {
       }
       final manual = await extractManual(bytes, mime);
       _manualText = manual.text;
+      _unreadPagesNote = unreadPagesNote(manual.ocrFailedPages);
       pageCount = manual.pageCount;
       thumbnails = manual.thumbnails;
       _pageSources = [
@@ -308,10 +340,10 @@ class DmxtractState extends ChangeNotifier {
       notifyListeners();
       final result = fixtureFromManualText(manual.text, name);
       fixture = result.fixture;
-      questions = result.questions;
+      questions = [?_unreadPagesNote, ...result.questions];
       needsRegion = result.fixture.channels.isEmpty;
-      status = needsRegion && result.questions.isNotEmpty
-          ? result.questions.first
+      status = needsRegion && questions.isNotEmpty
+          ? questions.first
           : needsRegion
           ? 'We could not find the table'
           : 'Checking for mistakes';
@@ -361,7 +393,7 @@ class DmxtractState extends ChangeNotifier {
         manualName!,
       );
       fixture = result.fixture;
-      questions = result.questions;
+      questions = [?_unreadPagesNote, ...result.questions];
       needsRegion = result.fixture.channels.isEmpty;
       if (needsRegion) {
         error =
