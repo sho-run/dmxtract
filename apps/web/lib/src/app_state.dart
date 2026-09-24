@@ -110,6 +110,10 @@ class DmxtractState extends ChangeNotifier {
   List<GdtfProfileMatch> gdtfMatches = [];
   final List<ManualPhoto> photos = [];
   bool gdtfLookupEnabled = false;
+
+  /// True while a GDTF Share search is in flight. The Check step uses this
+  /// with [gdtfMatches] to pick the status row's text.
+  bool gdtfLookupPending = false;
   bool phoneLinkAvailable = false;
   String? phoneLinkUrl;
   final List<String> _undo = [];
@@ -125,6 +129,12 @@ class DmxtractState extends ChangeNotifier {
   final http.Client _httpClient;
   PhoneLinkSession? _phoneLinkSession;
   StreamSubscription<ReceivedPhoto>? _phoneLinkPhotoSub;
+
+  /// Whether a GDTF Share lookup applies to the current [fixture] — mirrors
+  /// [GdtfLookupClient.appliesTo]. Computed fresh each read, not cached, so
+  /// it can't go stale after an edit.
+  bool get gdtfLookupApplies =>
+      fixture != null && _lookupClient.appliesTo(fixture!);
 
   FixtureMode? get mode => fixture == null || fixture!.modes.isEmpty
       ? null
@@ -283,10 +293,15 @@ class DmxtractState extends ChangeNotifier {
           : needsRegion
           ? 'We could not find the table'
           : 'Checking for mistakes';
-      if (!needsRegion) step = 1;
+      // Before the save, so the previous fixture's search can't land here.
+      if (needsRegion) {
+        _cancelFixtureLookup();
+      } else {
+        step = 1;
+        _queueFixtureLookup(force: true);
+      }
       photos.clear();
       await _save();
-      if (!needsRegion) _queueFixtureLookup();
     } catch (exception) {
       error =
           'We could not read those photos. ${exception.toString().replaceFirst('Exception: ', '')}';
@@ -319,8 +334,9 @@ class DmxtractState extends ChangeNotifier {
         needsRegion = false;
         step = 1;
         status = 'Opened your editable project';
+        // Before the save, so the previous fixture's search can't land here.
+        _queueFixtureLookup(force: true);
         await _save();
-        _queueFixtureLookup();
         return;
       }
       final manual = await extractManual(bytes, mime);
@@ -348,9 +364,14 @@ class DmxtractState extends ChangeNotifier {
           : needsRegion
           ? 'We could not find the table'
           : 'Checking for mistakes';
-      if (!needsRegion) step = 1;
+      // Before the save, so the previous fixture's search can't land here.
+      if (needsRegion) {
+        _cancelFixtureLookup();
+      } else {
+        step = 1;
+        _queueFixtureLookup(force: true);
+      }
       await _save();
-      if (!needsRegion) _queueFixtureLookup();
     } catch (exception) {
       error =
           'We could not read that file. ${exception.toString().replaceFirst('Exception: ', '')}';
@@ -396,14 +417,16 @@ class DmxtractState extends ChangeNotifier {
       fixture = result.fixture;
       questions = [?_unreadPagesNote, ...result.questions];
       needsRegion = result.fixture.channels.isEmpty;
+      // Before the save, so the previous fixture's search can't land here.
       if (needsRegion) {
         error =
             'That area did not contain a readable channel table. Try a tighter box around the channel rows.';
+        _cancelFixtureLookup();
       } else {
         step = 1;
         status = 'Checking for mistakes';
+        _queueFixtureLookup(force: true);
         await _save();
-        _queueFixtureLookup();
       }
     } catch (exception) {
       error =
@@ -637,6 +660,8 @@ class DmxtractState extends ChangeNotifier {
       );
     }
     _save();
+    // A no-op unless the name actually changed — see _queueFixtureLookup.
+    _queueFixtureLookup();
     notifyListeners();
   }
 
@@ -659,6 +684,7 @@ class DmxtractState extends ChangeNotifier {
       jsonDecode(_undo.removeLast()) as Map<String, Object?>,
     );
     _save();
+    _queueFixtureLookup();
     notifyListeners();
   }
 
@@ -669,6 +695,7 @@ class DmxtractState extends ChangeNotifier {
       jsonDecode(_redo.removeLast()) as Map<String, Object?>,
     );
     _save();
+    _queueFixtureLookup();
     notifyListeners();
   }
 
@@ -695,25 +722,69 @@ class DmxtractState extends ChangeNotifier {
       manualName = fixture!.sourceName;
       status = 'Restored your last local project';
       step = 1;
-      _queueFixtureLookup();
+      _queueFixtureLookup(force: true);
       notifyListeners();
     } catch (_) {}
   }
 
-  void _queueFixtureLookup() {
+  /// Bumped by every search [_queueFixtureLookup] actually starts, and by
+  /// [_cancelFixtureLookup]; a result only applies while this is still its
+  /// generation, so a stale search can't overwrite a newer one.
+  int _lookupGeneration = 0;
+
+  /// Key of the most recently queued search: whether a lookup applies, plus
+  /// the manufacturer, model and mode footprints [GdtfLookupClient.search]
+  /// sends. An edit, undo or redo searches again only when it changes.
+  String? _lastLookupKey;
+
+  String _lookupKey(FixtureProject project, bool applies) {
+    final footprints =
+        project.modes
+            .map((mode) => mode.channelIds.length)
+            .where((count) => count > 0)
+            .toSet()
+            .toList()
+          ..sort();
+    return '$applies\u0000${project.manufacturer}\u0000${project.model}'
+        '\u0000${footprints.join(',')}';
+  }
+
+  /// Queues a GDTF Share search for the current fixture. Unless [force],
+  /// a no-op when [_lookupKey] didn't change — callers that just loaded a
+  /// new fixture pass `force: true`, so a load always searches, including
+  /// a retry of the same key after a failed search.
+  void _queueFixtureLookup({bool force = false}) {
     final project = fixture;
     if (project == null) return;
-    final fixtureId = project.id;
+    final applies = _lookupClient.appliesTo(project);
+    final key = _lookupKey(project, applies);
+    if (!force && key == _lastLookupKey) return;
+    _lastLookupKey = key;
+    final generation = ++_lookupGeneration;
     gdtfMatches = const [];
     gdtfLookupEnabled = false;
+    // Set now, not after search()'s await, so the first frame already shows
+    // "Checking…" (or no row, when no lookup applies).
+    gdtfLookupPending = applies;
     unawaited(
       _lookupClient.search(project).then((result) {
-        if (fixture?.id != fixtureId) return;
+        if (generation != _lookupGeneration) return;
         gdtfMatches = result.matches;
         gdtfLookupEnabled = result.enabled;
+        gdtfLookupPending = false;
         notifyListeners();
       }),
     );
+  }
+
+  /// Drops any in-flight search and its state. For loads that replace
+  /// [fixture] without queueing a search (a read that found no table).
+  void _cancelFixtureLookup() {
+    _lookupGeneration++;
+    _lastLookupKey = null;
+    gdtfMatches = const [];
+    gdtfLookupEnabled = false;
+    gdtfLookupPending = false;
   }
 
   /// Status updates for an in-progress phone hand-off, or null when no

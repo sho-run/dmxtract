@@ -62,10 +62,18 @@ class GdtfLookupClient {
   final http.Client _client;
   final Uri _endpoint;
 
+  /// Whether a GDTF Share lookup is worth attempting for [fixture]: its
+  /// manufacturer and model must both be identified from the manual, not
+  /// the "Unknown …" placeholders extraction falls back to. Exposed so
+  /// callers (e.g. the Check step) can make the same decision synchronously,
+  /// without waiting on [search]'s network round trip.
+  bool appliesTo(FixtureProject fixture) =>
+      fixture.identityFromManual &&
+      !_unknown(fixture.manufacturer) &&
+      !_unknown(fixture.model);
+
   Future<GdtfLookupResult> search(FixtureProject fixture) async {
-    if (!fixture.identityFromManual ||
-        _unknown(fixture.manufacturer) ||
-        _unknown(fixture.model)) {
+    if (!appliesTo(fixture)) {
       return const GdtfLookupResult(enabled: false);
     }
     try {

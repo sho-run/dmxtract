@@ -9,8 +9,17 @@ import '../gdtf_lookup.dart';
 import '../model.dart';
 import '../theme.dart';
 
-class ReviewScreen extends StatelessWidget {
+class ReviewScreen extends StatefulWidget {
   const ReviewScreen({super.key});
+
+  @override
+  State<ReviewScreen> createState() => _ReviewScreenState();
+}
+
+class _ReviewScreenState extends State<ReviewScreen> {
+  // Held here, not local to build(), so it doesn't remount the card.
+  final _existingProfileKey = GlobalKey();
+
   @override
   Widget build(BuildContext context) {
     final state = DmxScope.of(context);
@@ -35,9 +44,23 @@ class ReviewScreen extends StatelessWidget {
           controls: fixture.maxModeChannelCount,
           onEdit: () => showFixtureNameEditor(context, state),
         ),
-        if (state.gdtfMatches.isNotEmpty) ...[
-          const SizedBox(height: 18),
-          _ExistingProfileCard(matches: state.gdtfMatches),
+        if (state.gdtfLookupApplies) ...[
+          const SizedBox(height: 14),
+          _GdtfLookupStatusRow(
+            pending: state.gdtfLookupPending,
+            hasMatches: state.gdtfMatches.isNotEmpty,
+            enabled: state.gdtfLookupEnabled,
+            onViewMatches: () {
+              final matchContext = _existingProfileKey.currentContext;
+              if (matchContext != null) {
+                Scrollable.ensureVisible(
+                  matchContext,
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeOutCubic,
+                );
+              }
+            },
+          ),
         ],
         const SizedBox(height: 26),
         Text(
@@ -118,13 +141,97 @@ class ReviewScreen extends StatelessWidget {
             label: const Text('Test your light'),
           ),
         ),
+        // Placed after every tap target so a late match can't move one.
+        if (state.gdtfMatches.isNotEmpty) ...[
+          const SizedBox(height: 26),
+          _ExistingProfileCard(
+            key: _existingProfileKey,
+            matches: state.gdtfMatches,
+          ),
+        ],
       ],
     );
   }
 }
 
+/// Fixed-height, single-line GDTF Share lookup status. Only its text
+/// changes, so it can't shift the mode cards or "Test your light" below it.
+class _GdtfLookupStatusRow extends StatelessWidget {
+  const _GdtfLookupStatusRow({
+    required this.pending,
+    required this.hasMatches,
+    required this.enabled,
+    required this.onViewMatches,
+  });
+
+  final bool pending;
+  final bool hasMatches;
+
+  /// The last search's own `enabled` result — false for a disabled lookup,
+  /// a provider error, or a timeout, all of which mean GDTF Share was never
+  /// actually asked (distinct from asking and finding no match).
+  final bool enabled;
+
+  final VoidCallback onViewMatches;
+
+  static const _height = 24.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final linked = hasMatches && !pending;
+    final label = pending
+        ? 'Checking GDTF Share…'
+        : hasMatches
+        ? 'Possible match below'
+        : enabled
+        ? 'No match on GDTF Share'
+        : 'GDTF Share not checked';
+    final row = Row(
+      children: [
+        Icon(
+          pending
+              ? Icons.hourglass_empty
+              : hasMatches
+              ? Icons.travel_explore
+              : enabled
+              ? Icons.check_circle_outline
+              : Icons.cloud_off,
+          size: 15,
+          color: DmxColors.muted,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: linked ? FontWeight.w800 : FontWeight.w600,
+              color: linked ? DmxColors.amber : DmxColors.muted,
+              decoration: linked ? TextDecoration.underline : null,
+            ),
+          ),
+        ),
+      ],
+    );
+    return SizedBox(
+      // Scaled so a larger text-scale setting doesn't clip the label;
+      // constant while a lookup is pending, so the row still never moves.
+      height: MediaQuery.textScalerOf(context).scale(_height),
+      child: linked
+          ? InkWell(
+              onTap: onViewMatches,
+              borderRadius: BorderRadius.circular(6),
+              child: row,
+            )
+          : row,
+    );
+  }
+}
+
 class _ExistingProfileCard extends StatelessWidget {
-  const _ExistingProfileCard({required this.matches});
+  const _ExistingProfileCard({super.key, required this.matches});
   final List<GdtfProfileMatch> matches;
 
   @override
